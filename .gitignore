@@ -1,0 +1,12 @@
+# Ignore objects and archives.
+*.[oa]
+# library description files
+*.lo
+*.la
+
+./chlore
+
+.deps/
+.libs/
+build/*
+
