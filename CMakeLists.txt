@@ -20,6 +20,9 @@ find_package(clay REQUIRED)
 
 include_directories("${CMAKE_CURRENT_SOURCE_DIR}/include")
 
+include_directories(${OSL_INCLUDE_DIR})
+include_directories(${CLAY_INCLUDE_DIR})
+
 #file(GLOB_RECURSE
 #     sources
 #     ${CMAKE_CURRENT_SOURCE_DIR}/*)

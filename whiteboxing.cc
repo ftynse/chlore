@@ -914,6 +914,64 @@ chlore_lookup_aii(osl_scop_p scop, osl_statement_p statement, bool loop_only,
   return result;
 }
 
+std::tuple<int, ClayArray, int>
+chlore_shifted(osl_relation_p scattering) {
+  clay_array_p current_parameters = clay_array_malloc();
+  clay_array_p beta = clay_beta_extract(scattering);
+
+  // If normalized form is not
+  //  b a b a b a b a a p p c
+  // [0 1 0 0 0 0 0 x x N M c]
+  // [      1 0 0 0 x x N M c]
+  // [          1 0 x x N M c]
+  // there is not much we can do right now, but this should not happen for
+  // valid scheduling realtions.
+
+  for (int depth = 0; depth < beta->size - 1; depth++) {
+    clay_array_clear(current_parameters);
+
+    bool shifted = false;
+    clay_array_clear(current_parameters);
+    for (int i = scattering->nb_columns - scattering->nb_parameters - 1;
+         i < scattering->nb_columns - 1; i++) {
+      int value = osl_int_get_si(scattering->precision, scattering->m[2*depth + 1][i]);
+      clay_array_add(current_parameters, value);
+      if (value != 0) {
+        shifted = true;
+      }
+    }
+    int constant  = osl_int_get_si(scattering->precision,
+                                   scattering->m[2*depth + 1][scattering->nb_columns - 1]);
+    if (constant != 0) {
+      shifted = true;
+    }
+
+    if (shifted) {
+      // return parameters and value
+      return std::make_tuple(depth + 1,
+                             ClayArray(current_parameters),
+                             constant);
+    }
+  }
+  clay_array_free(beta);
+  clay_array_free(current_parameters);
+
+  return std::make_tuple(-1, ClayArray(), 0);
+}
+
+std::tuple<ClayArray, int, ClayArray, int>
+lookup_shift(osl_statement_p statement) {
+  for (osl_relation_p scattering = statement->scattering; scattering != NULL;
+       scattering = scattering->next) {
+    clay_array_p beta = clay_beta_extract(scattering);
+    std::tuple<int, ClayArray, int> found = chlore_shifted(scattering);
+    if (std::get<0>(found) != -1) {
+      return std::tuple_cat(std::make_tuple(ClayArray(beta)), found);
+    }
+  }
+  return std::make_tuple(ClayArray(), -1, ClayArray(), 0);
+}
+
 inline std::vector<std::tuple<ClayArray, int, int>>
 lookup_stripmine_sizes(osl_scop_p scop, osl_statement_p statement) {
   return chlore_lookup_aii(scop, statement, true, chlore_extract_stripmine_size);
@@ -989,81 +1047,134 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
 
 
       // Check for stripmine/linearize
-     std::vector<std::tuple<ClayArray, int, int>> original_sizes =
-       lookup_stripmine_sizes(original, original_stmt);
-     std::vector<std::tuple<ClayArray, int, int>> transformed_sizes =
-       lookup_stripmine_sizes(transformed, transformed_stmt);
+      std::vector<std::tuple<ClayArray, int, int>> original_sizes =
+          lookup_stripmine_sizes(original, original_stmt);
+      std::vector<std::tuple<ClayArray, int, int>> transformed_sizes =
+          lookup_stripmine_sizes(transformed, transformed_stmt);
 
-     vector_pair_remove_identical_items(original_sizes, transformed_sizes);
+      vector_pair_remove_identical_items(original_sizes, transformed_sizes);
 
-     for (auto const &data : original_sizes) {
-       ClayArray beta;
-       int depth;
-       std::tie(beta, depth, std::ignore) = data;
+      for (auto const &data : original_sizes) {
+        ClayArray beta;
+        int depth;
+        std::tie(beta, depth, std::ignore) = data;
 
-       std::stringstream ss;
-       ss << "linearize " << beta << " @" << depth << "\n";
-       first.push_back(ss.str());
+        std::stringstream ss;
+        ss << "linearize " << beta << " @" << depth << "\n";
+        first.push_back(ss.str());
 
-       clay_linearize(original, beta, depth, options);
-     }
+        clay_linearize(original, beta, depth, options);
+      }
 
-     for (auto const &data : transformed_sizes) {
-       ClayArray beta;
-       int depth;
-       int size;
-       std::tie(beta, depth, size) = data;
+      for (auto const &data : transformed_sizes) {
+        ClayArray beta;
+        int depth;
+        int size;
+        std::tie(beta, depth, size) = data;
 
-       std::stringstream ss;
-       ss << "stripmine " << beta << " @" << depth << " " << size << "\n";
-       last.push_front(ss.str());
+        std::stringstream ss;
+        ss << "stripmine " << beta << " @" << depth << " " << size << "\n";
+        last.push_front(ss.str());
 
-       clay_linearize(transformed, beta, depth, options);
-     }
-
-
-     if (transformed_sizes.size() != 0 ||
-         original_sizes.size() != 0) {
-       continue;
-     }
+        clay_linearize(transformed, beta, depth, options);
+      }
 
 
-     // Check for grain/densify
-     std::vector<std::tuple<ClayArray, int, int>> original_grains =
-       lookup_grains(original, original_stmt);
-     std::vector<std::tuple<ClayArray, int, int>> transformed_grains =
-       lookup_grains(transformed, transformed_stmt);
+      if (transformed_sizes.size() != 0 ||
+          original_sizes.size() != 0) {
+        continue;
+      }
 
-     vector_pair_remove_identical_items(original_grains, transformed_grains);
 
-     for (auto const &data : original_grains) {
-       ClayArray beta;
-       int depth;
-       std::tie(beta, depth, std::ignore) = data;
+      // Check for grain/densify
+      std::vector<std::tuple<ClayArray, int, int>> original_grains =
+          lookup_grains(original, original_stmt);
+      std::vector<std::tuple<ClayArray, int, int>> transformed_grains =
+          lookup_grains(transformed, transformed_stmt);
 
-       std::stringstream ss;
-       ss << "densify " << beta << " @" << depth << "\n";
-       first.push_back(ss.str());
+      vector_pair_remove_identical_items(original_grains, transformed_grains);
 
-       clay_densify(original, beta, depth, options);
-     }
+      for (auto const &data : original_grains) {
+        ClayArray beta;
+        int depth;
+        std::tie(beta, depth, std::ignore) = data;
 
-     for (auto const &data : transformed_grains) {
-       ClayArray beta;
-       int depth;
-       int size;
-       std::tie(beta, depth, size) = data;
+        std::stringstream ss;
+        ss << "densify " << beta << " @" << depth << "\n";
+        first.push_back(ss.str());
 
-       std::stringstream ss;
-       ss << "grain " << beta << " @" << depth << " " << size << "\n";
-       last.push_front(ss.str());
+        clay_densify(original, beta, depth, options);
+      }
 
-       clay_densify(transformed, beta, depth, options);
-     }
+      for (auto const &data : transformed_grains) {
+        ClayArray beta;
+        int depth;
+        int size;
+        std::tie(beta, depth, size) = data;
 
-     if (original_grains.size() != 0 || transformed_grains.size() != 0) {
-       continue;
-     }
+        std::stringstream ss;
+        ss << "grain " << beta << " @" << depth << " " << size << "\n";
+        last.push_front(ss.str());
+
+        clay_densify(transformed, beta, depth, options);
+      }
+
+      if (original_grains.size() != 0 || transformed_grains.size() != 0) {
+        continue;
+      }
+
+      osl_scop_normalize_scattering(original);
+      osl_scop_normalize_scattering(transformed);
+
+      // Shifts
+      std::tuple<ClayArray, int, ClayArray, int> potential_shift =
+          lookup_shift(original_stmt);
+      if (std::get<1>(potential_shift) != -1) {
+        ClayArray beta, parameters;
+        int depth;
+        int constant;
+        std::tie(beta, depth, parameters, constant) = potential_shift;
+
+        // Negate everything.
+//        clay_array_p c_parameters = static_cast<clay_array_p>(parameters);
+//        for (int k = 0; k < c_parameters->size; k++) {
+//          c_parameters->data[k] = -c_parameters->data[k];
+//        }
+//        constant = -constant;
+
+        std::stringstream ss;
+        ss << "shift " << beta << " @" << depth << " "
+           << parameters << " " << constant << "\n";
+        first.push_back(ss.str());
+
+        clay_shift(original, beta, depth, parameters, constant, options);
+
+        continue;
+      }
+
+      potential_shift = lookup_shift(transformed_stmt);
+      if (std::get<1>(potential_shift) != -1) {
+        ClayArray beta, parameters;
+        int depth;
+        int constant;
+        std::tie(beta, depth, parameters, constant) = potential_shift;
+
+        std::stringstream ss;
+        ss << "shift " << beta << " @" << depth << " "
+           << parameters << " " << constant << "\n";
+        last.push_front(ss.str());
+
+        // Negate everything.
+//        clay_array_p c_parameters = static_cast<clay_array_p>(parameters);
+//        for (int k = 0; k < c_parameters->size; k++) {
+//          c_parameters->data[k] = -c_parameters->data[k];
+//        }
+//        constant = -constant;
+
+        clay_shift(transformed, beta, depth, parameters, constant, options);
+
+        continue;
+      }
 
       // Can't do anything
       break;
