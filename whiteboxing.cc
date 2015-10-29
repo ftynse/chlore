@@ -914,6 +914,90 @@ chlore_lookup_aii(osl_scop_p scop, osl_statement_p statement, bool loop_only,
   return result;
 }
 
+const int TRANSFORMATION_NOT_FOUND = -1;
+const int INTERCHANGE_REQUESTED = -2;
+
+std::tuple<ClayArray, int, int, int, int>
+chlore_skewed(osl_relation_p scattering) {
+  osl_int_t lcm, factor_source, factor_target;
+  assert(scattering != NULL);
+
+  osl_int_init(scattering->precision, &lcm);
+  osl_int_init(scattering->precision, &factor_source);
+  osl_int_init(scattering->precision, &factor_target);
+
+  clay_array_p beta = clay_beta_extract(scattering);
+
+  // expects the relation to be normalized
+  int nb_rows = 0;
+  for ( ; nb_rows != scattering->nb_rows ; nb_rows++) {
+    if (!osl_int_zero(scattering->precision, scattering->m[nb_rows][0]))
+      break;
+  }
+
+  // expects the relation to have enough rows for all input dimensions (validity)
+  assert(nb_rows == scattering->nb_input_dims * 2 + 1);
+
+  // beta-definition rows interleave alpha-definition rows
+  for (int i = 0; i < scattering->nb_input_dims; i++) {
+    for (int j = i + 1; j < scattering->nb_input_dims; j++) {
+      int source_row = 2*i + 1;
+      int target_row = 2*j + 1;
+      int source_column = 1 + scattering->nb_output_dims;
+
+      // no need for skewing away this value
+      if (osl_int_zero(scattering->precision,
+                       scattering->m[target_row][source_column])) {
+        continue;
+      }
+
+      if (osl_int_zero(scattering->precision,
+                       scattering->m[source_row][source_column])) {
+        // interchange, target value is known to be non-zero by now.
+        int depth_1 = -1;
+        int depth_2 = -1;
+        for (int k = 0; k < (scattering->nb_output_dims - 1) / 2; k++) {
+          if (depth_1 == -1 &&
+              !osl_int_zero(scattering->precision,
+                            scattering->m[source_row][2 + 2*k])) {
+            depth_1 = k + 1;
+          }
+          if (depth_2 == -1 &&
+              !osl_int_zero(scattering->precision,
+                            scattering->m[target_row][2 + 2*k])) {
+            depth_2 = k + 1;
+          }
+        }
+        assert(depth_1 != -1 && depth_2 != -1 && "relation seems invalid");
+        return std::make_tuple(ClayArray(beta), INTERCHANGE_REQUESTED, -1, depth_1, depth_2);
+      }
+
+      osl_int_lcm(scattering->precision, &lcm,
+                  scattering->m[source_row][source_column],
+                  scattering->m[target_row][source_column]);
+
+      osl_int_div_exact(scattering->precision, &factor_source,
+                        lcm, scattering->m[source_row][source_column]);
+      osl_int_div_exact(scattering->precision, &factor_target,
+                        lcm, scattering->m[target_row][source_column]);
+
+      int factor_i = osl_int_get_si(scattering->precision, factor_source);
+      int factor_j = osl_int_get_si(scattering->precision, factor_target);
+
+      osl_int_clear(scattering->precision, &lcm);
+      osl_int_clear(scattering->precision, &factor_source);
+      osl_int_clear(scattering->precision, &factor_target);
+      return std::make_tuple(ClayArray(beta), i + 1, j + 1, factor_i, factor_j);
+    }
+  }
+
+  osl_int_clear(scattering->precision, &lcm);
+  osl_int_clear(scattering->precision, &factor_source);
+  osl_int_clear(scattering->precision, &factor_target);
+  clay_array_free(beta);
+  return std::make_tuple(ClayArray(), TRANSFORMATION_NOT_FOUND, -1, 0, 0);
+}
+
 std::tuple<int, ClayArray, int>
 chlore_shifted(osl_relation_p scattering) {
   clay_array_p current_parameters = clay_array_malloc();
@@ -972,6 +1056,19 @@ lookup_shift(osl_statement_p statement) {
   return std::make_tuple(ClayArray(), -1, ClayArray(), 0);
 }
 
+// TODO: generalize with lookup_shift
+std::tuple<ClayArray, int, int, int, int>
+lookup_skew(osl_statement_p statement) {
+  for (osl_relation_p scattering = statement->scattering; scattering != NULL;
+       scattering = scattering->next) {
+    std::tuple<ClayArray, int, int, int, int> found = chlore_skewed(scattering);
+    if (std::get<1>(found) != TRANSFORMATION_NOT_FOUND) {
+      return found;
+    }
+  }
+  return std::make_tuple(ClayArray(), -1, -1, 0, 0);
+}
+
 inline std::vector<std::tuple<ClayArray, int, int>>
 lookup_stripmine_sizes(osl_scop_p scop, osl_statement_p statement) {
   return chlore_lookup_aii(scop, statement, true, chlore_extract_stripmine_size);
@@ -980,6 +1077,108 @@ lookup_stripmine_sizes(osl_scop_p scop, osl_statement_p statement) {
 inline std::vector<std::tuple<ClayArray, int, int>>
 lookup_grains(osl_scop_p scop, osl_statement_p statement) {
   return chlore_lookup_aii(scop, statement, false, chlore_extract_grain);
+}
+
+// assumes normalized
+std::tuple<int, int, int>
+chlore_reshaped(osl_relation_p relation) {
+  for (int i = 1; i < relation->nb_rows; i += 2) { // ignore beta definitions
+    for (int j = 0; j < relation->nb_input_dims; j++) {
+      if ((i - 1) / 2 == j) {
+        continue;
+      }
+
+      int value =  osl_int_get_si(relation->precision,
+                              relation->m[i][relation->nb_output_dims + 1 + j]);
+      if (value != 0) {
+        return std::make_tuple((i + 1) / 2, j + 1, value);
+      }
+    }
+  }
+  return std::make_tuple(TRANSFORMATION_NOT_FOUND, -1, -1);
+}
+
+std::tuple<ClayArray, int, int, int>
+lookup_reshape(osl_statement_p statement) {
+  for (osl_relation_p scattering = statement->scattering; scattering != NULL;
+       scattering = scattering->next) {
+    std::tuple<int, int, int> found = chlore_reshaped(scattering);
+    if (std::get<0>(found) != TRANSFORMATION_NOT_FOUND) {
+      return std::tuple_cat(std::make_tuple(ClayArray(clay_beta_extract(scattering))), found);
+    }
+  }
+  return std::make_tuple(ClayArray(), TRANSFORMATION_NOT_FOUND, -1, -1);
+}
+
+// Assumes normalized relation
+std::tuple<int, int, int>
+chlore_implicitly_skewed(osl_relation_p relation) {
+  int nb_explicit_dims = 0;
+
+  for (int i = 0; i < relation->nb_rows; i++) {
+    if (osl_int_zero(relation->precision, relation->m[i][0]))
+      nb_explicit_dims++;
+    else
+      break;
+  }
+  nb_explicit_dims = (nb_explicit_dims - 1) / 2;  // do not count betas
+  assert(nb_explicit_dims == relation->nb_input_dims);
+
+  int nb_implicit_dims = (relation->nb_output_dims - 1) / 2 - nb_explicit_dims;
+
+  if (nb_implicit_dims == 0)
+    return std::make_tuple(TRANSFORMATION_NOT_FOUND, -1, -1);
+
+  for (int j = 0; j < nb_explicit_dims; j++) {
+    int row = 2*j + 1;
+    for (int i = 0; i < nb_implicit_dims; i++) {
+      int column = 2 + 2 * (nb_explicit_dims + i);
+      int value = osl_int_get_si(relation->precision, relation->m[row][column]);
+      if (value != 0) {
+        return std::make_tuple(j + 1, i + nb_explicit_dims + 1, value);
+      }
+    }
+  }
+
+  return std::make_tuple(TRANSFORMATION_NOT_FOUND, -1, -1);
+}
+
+std::tuple<ClayArray, int, int, int>
+lookup_implicit_skew(osl_statement_p statement) {
+  for (osl_relation_p scattering = statement->scattering; scattering != nullptr;
+       scattering = scattering->next) {
+    std::tuple<int, int, int> found = chlore_implicitly_skewed(scattering);
+    if (std::get<0>(found) != TRANSFORMATION_NOT_FOUND){
+      return std::tuple_cat(std::make_tuple(ClayArray(clay_beta_extract(scattering))), found);
+    }
+  }
+  return std::make_tuple(ClayArray(), TRANSFORMATION_NOT_FOUND, -1, -1);
+}
+
+std::tuple<int, int>
+chlore_fix_diagonal(osl_relation_p relation) {
+  for (int i = 0; i < relation->nb_input_dims; i++) {
+    int row = 1 + 2*i;
+    int column = 1 + relation->nb_output_dims + i;
+    int value = osl_int_get_si(relation->precision, relation->m[row][column]);
+    assert(value != 0 && "input dimension part is suspicious, possibly invalid relation");
+    if (value != 1) {
+      return std::make_tuple(i + 1, value);
+    }
+  }
+  return std::make_tuple(TRANSFORMATION_NOT_FOUND, -1);
+}
+
+std::tuple<ClayArray, int, int>
+lookup_diagonal_elements(osl_statement_p statement) {
+  for (osl_relation_p scattering = statement->scattering; scattering != nullptr;
+       scattering = scattering->next) {
+    std::tuple<int, int> found = chlore_fix_diagonal(scattering);
+    if (std::get<0>(found) != TRANSFORMATION_NOT_FOUND) {
+      return std::tuple_cat(std::make_tuple(ClayArray(clay_beta_extract(scattering))), found);
+    }
+  }
+  return std::make_tuple(ClayArray(), TRANSFORMATION_NOT_FOUND, -1);
 }
 
 void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
@@ -1175,6 +1374,237 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
 
         continue;
       }
+
+
+
+      // Skew
+      std::tuple<ClayArray, int, int, int, int> potential_skew =
+          lookup_skew(original_stmt);
+      if (std::get<1>(potential_skew) == INTERCHANGE_REQUESTED) {
+        ClayArray beta;
+        int depth_1, depth_2;
+        std::tie(beta, std::ignore, std::ignore, depth_1, depth_2) = potential_skew;
+
+        std::stringstream ss;
+        ss << "interchange " << beta << " @" << depth_1 << " with @" << depth_2 << "\n";
+        first.push_back(ss.str());
+
+        clay_interchange(original, beta, depth_1, depth_2, 0, options);
+        osl_statement_p unused_statement;
+        osl_relation_p scattering;
+        clay_beta_find_relation(original_stmt, beta, &unused_statement, &scattering);
+        clay_relation_normalize_alpha(scattering);
+        continue;
+      } else if (std::get<1>(potential_skew) != TRANSFORMATION_NOT_FOUND) {
+        ClayArray beta;
+        int source, target, source_grain, target_grain;
+        std::tie(beta, source, target, source_grain, target_grain) = potential_skew;
+        std::stringstream ss;
+
+        // TODO: use skew with non-one parameter instead of this.
+        if (source_grain > 1) {
+          ss << "grain " << beta << " @" << source << " " << source_grain << "\n";
+          clay_grain(original, beta, source, source_grain, options);
+        } else if (source_grain < 0) {
+          source_grain = -source_grain;
+          ss << "reverse " << beta << " @" << source << "\n";
+          ss << "grain " << beta << " @" << source << " " << source_grain << "\n";
+          clay_reverse(original, beta, source, options);
+          clay_grain(original, beta, source, source_grain, options);
+        }
+
+        if (target_grain > 1) {
+          ss << "grain " << beta << " @" << target << " " << target_grain << "\n";
+          clay_grain(original, beta, target, target_grain, options);
+        } else if (target_grain < 0) {
+          target_grain = -target_grain;
+          ss << "reverse " << beta << " @" << target << "\n";
+          clay_reverse(original, beta, target, options);
+          if (target_grain != 1) {
+            ss << "grain " << beta << " @" << target << " " << target_grain << "\n";
+            clay_grain(original, beta, target, target_grain, options);
+          }
+        }
+
+        ss << "skew " << beta << " @" << source << " by 1x@" << target << "\n";
+        clay_skew(original, beta, target, source, 1, options);
+
+        osl_statement_p unused_statement;
+        osl_relation_p scattering;
+        clay_beta_find_relation(original_stmt, beta, &unused_statement, &scattering);
+        clay_relation_normalize_alpha(scattering);
+
+        first.push_back(ss.str());
+        continue;
+      }
+
+      potential_skew = lookup_skew(transformed_stmt);
+      if (std::get<1>(potential_skew) == INTERCHANGE_REQUESTED) {
+        ClayArray beta;
+        int depth_1, depth_2;
+        std::tie(beta, std::ignore, std::ignore, depth_1, depth_2) = potential_skew;
+
+        std::stringstream ss;
+        ss << "interchange " << beta << " @" << depth_1 << " with @" << depth_2 << "\n";
+        last.push_front(ss.str());
+
+        clay_interchange(transformed, beta, depth_1, depth_2, 0, options);
+        osl_statement_p unused_statement;
+        osl_relation_p scattering;
+        clay_beta_find_relation(transformed_stmt, beta, &unused_statement, &scattering);
+        clay_relation_normalize_alpha(scattering);
+        continue;
+      } else if (std::get<1>(potential_skew) != TRANSFORMATION_NOT_FOUND) {
+        ClayArray beta;
+        int source, target, source_grain, target_grain;
+        std::tie(beta, source, target, source_grain, target_grain) = potential_skew;
+        std::stringstream ss;
+
+        if (source_grain > 1) {
+          ss << "grain " << beta << " @" << source << " " << source_grain << "\n";
+          clay_grain(transformed, beta, source, source_grain, options);
+        } else if (source_grain < 0) {
+          source_grain = -source_grain;
+          ss << "reverse " << beta << " @" << source << "\n";
+          ss << "grain " << beta << " @" << source << " " << source_grain << "\n";
+          clay_reverse(transformed, beta, source, options);
+          clay_grain(transformed, beta, source, source_grain, options);
+        }
+
+        if (target_grain > 1) {
+          ss << "grain " << beta << " @" << target << " " << target_grain << "\n";
+          clay_grain(transformed, beta, target, target_grain, options);
+        } else if (target_grain < 0) {
+          target_grain = -target_grain;
+          ss << "reverse " << beta << " @" << target << "\n";
+          clay_reverse(transformed, beta, target, options);
+          if (target_grain != 1) {
+            ss << "grain " << beta << " @" << target << " " << target_grain << "\n";
+            clay_grain(transformed, beta, target, target_grain, options);
+          }
+        }
+
+        ss << "skew " << beta << " @" << source << " by -1x@" << target << "\n";
+        clay_skew(transformed, beta, source, target, 1, options);
+        clay_relation_normalize_alpha(transformed_stmt->scattering);
+
+        osl_statement_p unused_statement;
+        osl_relation_p scattering;
+        clay_beta_find_relation(transformed_stmt, beta, &unused_statement, &scattering);
+        clay_relation_normalize_alpha(scattering);
+        last.push_front(ss.str());
+        continue;
+      }
+
+      // Skew for implicitly-defined dimensions
+      std::tuple<ClayArray, int, int, int> potential_iskew =
+          lookup_implicit_skew(original_stmt);
+      if (std::get<1>(potential_iskew) != TRANSFORMATION_NOT_FOUND) {
+        ClayArray beta;
+        int source, target, coefficient;
+        std::tie(beta, source, target, coefficient) = potential_iskew;
+
+        std::stringstream ss;
+        ss << "skew " << beta << " @" << source << " by "
+           << coefficient << "x@" << target << "\n";
+        first.push_back(ss.str());
+
+        clay_skew(original, beta, source, target, coefficient, options);
+        continue;
+      }
+
+      potential_iskew = lookup_implicit_skew(transformed_stmt);
+      if (std::get<1>(potential_iskew) != TRANSFORMATION_NOT_FOUND) {
+        ClayArray beta;
+        int source, target, coefficient;
+        std::tie(beta, source, target, coefficient) = potential_iskew;
+
+        std::stringstream ss;
+        ss << "skew " << beta << " @" << source << " by "
+           << -coefficient << "x@" << target << "\n";
+        last.push_front(ss.str());
+
+        clay_skew(transformed, beta, source, target, coefficient, options);
+        continue;
+      }
+
+
+
+      // Reshape
+      std::tuple<ClayArray, int, int, int> potential_reshape =
+          lookup_reshape(original_stmt);
+      if (std::get<1>(potential_reshape) != TRANSFORMATION_NOT_FOUND) {
+        ClayArray beta;
+        int dim, input, coefficient;
+        std::tie(beta, dim, input, coefficient) = potential_reshape;
+
+        std::stringstream ss;
+        ss << "reshape " << beta << " @" << dim << " by "
+           << coefficient << "x@" << input << "\n";
+        first.push_back(ss.str());
+
+        clay_reshape(original, beta, dim, input, coefficient, options);
+      }
+
+      potential_reshape = lookup_reshape(transformed_stmt);
+      if (std::get<1>(potential_reshape) != TRANSFORMATION_NOT_FOUND) {
+        ClayArray beta;
+        int dim, input, coefficient;
+        std::tie(beta, dim, input, coefficient) = potential_reshape;
+
+        std::stringstream ss;
+        ss << "reshape " << beta << " @" << dim << " by "
+           << -coefficient << "x@" << input << "\n";
+        first.push_back(ss.str());
+
+        clay_reshape(transformed, beta, dim, input, coefficient, options);
+      }
+
+
+      // Grain and reverse on the diagonal
+      std::tuple<ClayArray, int, int> diagonal_element =
+          lookup_diagonal_elements(original_stmt);
+      if (std::get<1>(diagonal_element) != TRANSFORMATION_NOT_FOUND) {
+        ClayArray beta;
+        int dim;
+        int amount;
+        std::tie(beta, dim, amount) = diagonal_element;
+
+        std::stringstream ss;
+
+        if (amount < 0) {
+          ss << "reverse " << beta << " @" << dim << "\n";
+
+          clay_reverse(original, beta, dim, options);
+          amount = -amount;
+        }
+        ss << "grain " << beta << " @" << dim << " " << amount << "\n";
+
+        clay_grain(original, beta, dim, amount, options);
+        continue;
+      }
+
+      diagonal_element = lookup_diagonal_elements(transformed_stmt);
+      if (std::get<1>(diagonal_element) != TRANSFORMATION_NOT_FOUND) {
+        ClayArray beta;
+        int dim;
+        int amount;
+        std::tie(beta, dim, amount) = diagonal_element;
+
+        std::stringstream ss;
+
+        if (amount < 0) {
+          ss << "reverse " << beta << " @" << dim << "\n";
+
+          clay_reverse(transformed, beta, dim, options);
+          amount = -amount;
+        }
+        ss << "grain " << beta << " @" << dim << " " << amount << "\n";
+
+        clay_grain(transformed, beta, dim, amount, options);
+        continue;
+      }
+
 
       // Can't do anything
       break;
