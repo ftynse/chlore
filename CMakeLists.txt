@@ -26,6 +26,7 @@ include_directories(${CLAY_INCLUDE_DIR})
 #file(GLOB_RECURSE
 #     sources
 #     ${CMAKE_CURRENT_SOURCE_DIR}/*)
-add_executable(chlore "${CMAKE_CURRENT_SOURCE_DIR}/whiteboxing.cc")
+add_executable(chlore "${CMAKE_CURRENT_SOURCE_DIR}/whiteboxing.cc"
+                      "${CMAKE_CURRENT_SOURCE_DIR}/tree.cc")
 target_link_libraries(chlore ${OSL_LIBRARY})
 target_link_libraries(chlore ${CLAY_LIBRARY})

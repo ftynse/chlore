@@ -4,6 +4,8 @@
 #include <sstream>
 #include <tuple>
 #include <vector>
+#include <exception>
+#include <typeinfo>
 
 #include <osl/osl.h>
 
@@ -17,10 +19,259 @@
 #include <stdlib.h>
 #include <assert.h>
 
+#include "beta.h"
 
 // chunky loop optimization revealer ||
 // chunku loop optimizer reverse engineering
 // ChLORe
+
+template <typename T>
+class optional {
+private:
+  bool has_value;
+  T value;
+public:
+  optional(const T &t) : has_value(true), value(t) {}
+  optional() : has_value(false) {}
+
+  operator bool () const {
+    return has_value;
+  }
+
+  operator T& () {
+    if (!has_value) {
+      throw std::bad_cast();
+    }
+    return value;
+  }
+
+  operator const T& () const {
+    if (!has_value) {
+      throw std::bad_cast();
+    }
+    return value;
+  }
+};
+
+template <typename T>
+class optional<T *> {
+private:
+  T *value;
+public:
+  optional(T *t) : value(t | 0x1) {}
+  optional() : value(0) {}
+
+  operator bool () const {
+    return value & 0x1;
+  }
+
+  operator T* () {
+    return value & ~0x1;
+  }
+
+  operator const T* () const {
+    return value & ~0x1;
+  }
+};
+
+template <typename T>
+optional<T> make_optional(T t) {
+  return optional<T>(t);
+}
+
+template <typename T>
+optional<T> make_empty() {
+  return optional<T>();
+}
+
+char *clay_array_string(clay_array_p array);
+char *clay_list_string(clay_list_p list);
+int clay_list_equal(clay_list_p l1, clay_list_p l2);
+
+template <typename T, T *(creator)(), void (deleter)(T *),
+          T *(cloner)(T *), int (equality)(T *, T *), char *(printer)(T *)>
+class OSLContainer {
+public:
+  OSLContainer() {
+    object = creator();
+  }
+
+  OSLContainer(T *other) {
+    object = other;
+  }
+
+  static OSLContainer copy(T *other) {
+    T *clone = cloner(other);
+    return OSLContainer(clone);
+  }
+
+  OSLContainer(const OSLContainer &other) {
+    object = cloner(other.object);
+  }
+
+  OSLContainer(T &&other) {
+    object = other.object;
+    other.object = nullptr;
+  }
+
+  ~OSLContainer() {
+    deleter(object);
+  }
+
+  OSLContainer &operator = (const OSLContainer &other) {
+    deleter(object);
+    object = cloner(other.object);
+    return *this;
+  }
+
+  bool operator == (const OSLContainer &other) const {
+    return equality(object, other.object);
+  }
+
+  bool operator != (const OSLContainer &other) const {
+    return !equality(object, other.object);
+  }
+
+  operator T *() {
+    return object;
+  }
+
+  operator T &() {
+    return *object;
+  }
+
+  friend std::ostream &operator <<(std::ostream &out, const OSLContainer &container) {
+    char *cstring = printer(container.object);
+    out << cstring;
+    free(cstring);
+    return out;
+  }
+
+private:
+  T *object;
+};
+
+typedef OSLContainer<clay_array_t, clay_array_malloc, clay_array_free, clay_array_clone, clay_array_equal, clay_array_string> ClayArray;
+typedef OSLContainer<clay_list_t, clay_list_malloc, clay_list_free, clay_list_clone, clay_list_equal, clay_list_string> ClayList;
+
+
+struct ChloreBetaTransformation {
+  enum {
+    FUSE,
+    SPLIT,
+    REORDER
+  } kind;
+  ClayArray target;
+  int depth;
+  int first_loop_size;
+  ClayArray order;
+};
+
+std::ostream &operator <<(std::ostream &out, const ChloreBetaTransformation &transformation) {
+  switch (transformation.kind) {
+  case ChloreBetaTransformation::FUSE:
+    out << "fuse " << transformation.target;
+    break;
+
+  case ChloreBetaTransformation::SPLIT:
+    out << "split " << transformation.target << " @" << transformation.depth;
+    break;
+
+  case ChloreBetaTransformation::REORDER:
+    out << "reorder " << transformation.target << " " << transformation.order;
+  }
+  out << "\n";
+  return out;
+}
+
+std::deque<ChloreBetaTransformation>
+chlore_complementary_beta_transformation(std::vector<ChloreBetaTransformation> sequence) {
+  std::deque<ChloreBetaTransformation> result;
+  for (ChloreBetaTransformation &transformation : sequence) {
+    ChloreBetaTransformation new_transformation;
+    switch (transformation.kind) {
+    case ChloreBetaTransformation::FUSE:
+    {
+      new_transformation.kind = ChloreBetaTransformation::SPLIT;
+      clay_array_p target = clay_array_clone(transformation.target);
+      clay_array_add(target, transformation.first_loop_size);
+      new_transformation.target = target;
+      new_transformation.depth = target->size - 1;
+    }
+      break;
+
+    case ChloreBetaTransformation::SPLIT:
+    {
+      new_transformation.kind = ChloreBetaTransformation::FUSE;
+      clay_array_p target = clay_array_clone(transformation.target);
+      target->size = transformation.depth;
+      new_transformation.target = ClayArray(target);
+    }
+      break;
+
+    case ChloreBetaTransformation::REORDER:
+    {
+      new_transformation.kind = ChloreBetaTransformation::REORDER;
+      clay_array_p old_order = static_cast<clay_array_p>(transformation.order);
+      clay_array_p new_order = clay_array_clone(transformation.order);
+      for (int i = 0; i < old_order->size; i++) {
+        new_order->data[old_order->data[i]] = i;
+      }
+      new_transformation.order = ClayArray(new_order);
+    }
+      break;
+
+    default:
+      assert(0);
+    }
+    result.push_front(new_transformation);
+  }
+  return result;
+}
+
+
+// TODO: move to clay
+int clay_list_equal(clay_list_p l1, clay_list_p l2) {
+  int i;
+
+  if (l1->size != l2->size)
+    return 0;
+
+  for (i = 0; i < l1->size; i++) {
+    if (!clay_array_equal(l1->data[i], l2->data[i]))
+      return 0;
+  }
+
+  return 1;
+}
+
+template <typename Func, typename... Args>
+int chlore_try_transformation(osl_scop_p scop, Func transformation, Args... arguments) {
+  osl_scop_p copy = osl_scop_clone(scop);
+
+  int result = transformation(scop, arguments...);
+  int success = result == CLAY_SUCCESS;
+  success = success && !osl_scop_equal(copy, scop);
+  osl_scop_free(copy);
+  return success;
+}
+
+template <typename T>
+void vector_remove_duplicates(std::vector<T> &data) {
+  std::set<size_t> to_remove;
+  for (size_t i = 0, ei = data.size(); i < ei; i++) {
+    for (size_t j = i + 1, ej = data.size(); j < ej; j++) {
+      if (data[i] == data[j]) {
+        to_remove.insert(j);
+      }
+    }
+  }
+
+  for (auto it = to_remove.rbegin(), eit = to_remove.rend(); it != eit; it++) {
+    data.erase(data.begin() + *it);
+  }
+}
+
 
 // TODO: move to clay
 void clay_beta_find_relation(osl_statement_p start, clay_array_p beta,
@@ -166,14 +417,115 @@ int chlore_check_compatible(osl_scop_p original, osl_scop_p transformed) {
   return 1;
 }
 
+int chlore_relation_collapsing_lines(osl_relation_p s1, osl_relation_p s2,
+                                     int *row_index1, int *row_index2) {
+  int row, col, row_1, row_2;
+  int candidate_row_1, candidate_row_2;
+  clay_array_p matched_rows_2;
+
+  assert(row_index1 && row_index2);
+
+  // Check scattering parameters are compatible.
+  if (!s1 || !s2 ||
+      s1->nb_rows != s2->nb_rows ||
+      s1->nb_input_dims != s2->nb_input_dims ||
+      s1->nb_output_dims != s2->nb_output_dims ||
+      s1->nb_local_dims != s2->nb_local_dims ||
+      s1->nb_parameters != s2->nb_parameters) {
+    return CLAY_ERROR_WRONG_COEFF; // FIXME: local dimensions can be merged
+  }
+
+  // Check all equalities are the same (in normalized form, equations come
+  // before inequalities, sorted lexicographically so that line by line
+  // comparison is possible.
+  for (row = 0; row < s1->nb_rows; row++) {
+    if (clay_util_is_row_beta_definition(s1, row)) {
+      continue; // ignore beta rows that are already compare by beta-matching
+    }
+    if (osl_int_one(s1->precision, s1->m[row][0])) {
+      break; // inequality part started
+    }
+    for (col = 0; col < s1->nb_columns; col++) {
+      if (osl_int_ne(s1->precision, s1->m[row][col], s2->m[row][col])) {
+        return CLAY_ERROR_WRONG_COEFF;
+      }
+    }
+  }
+
+  matched_rows_2 = clay_array_malloc();
+  candidate_row_1 = -1;
+  for (row_1 = row; row_1 < s1->nb_rows; row_1++) {
+    int matched_row = -1;
+    for (row_2 = row; row_2 < s2->nb_rows; row_2++) {
+      int mismatch = 0;
+
+      // Skip if row is already matched.
+      if (clay_array_contains(matched_rows_2, row_2)) {
+        continue;
+      }
+
+      for (col = 0; col < s1->nb_columns; col++) {
+        if (osl_int_ne(s1->precision,
+                       s1->m[row_1][col], s2->m[row_2][col])) {
+          mismatch = 1;
+          break;
+        }
+      }
+      if (!mismatch) {
+        matched_row = row_2;
+        clay_array_add(matched_rows_2, row_2);
+        break;
+      }
+    }
+
+    // If no row matched,
+    if (matched_row == -1) {
+      if (candidate_row_1 != -1) { // Cannot have two unmatching rows.
+        clay_array_free(matched_rows_2);
+        return CLAY_ERROR_WRONG_COEFF;
+      }
+      candidate_row_1 = row_1;
+    }
+  }
+
+  // Find the single unmatched row in s2.
+  candidate_row_2 = -1;
+  for (row_2 = row; row_2 < s2->nb_rows; row_2++) {
+    if (!clay_array_contains(matched_rows_2, row_2)) {
+      candidate_row_2 = row_2;
+      break;
+    }
+  }
+  clay_array_free(matched_rows_2);
+  if (candidate_row_2 == -1) {
+    // XXX: Something went wrong...
+    return CLAY_ERROR_WRONG_COEFF;
+  }
+
+  // Check if unmatched rows differ up to negation.
+  clay_util_relation_negate_row(s2, candidate_row_2);
+  for (col = 0; col < s1->nb_columns; col++) {
+    if (osl_int_ne(s1->precision, s1->m[candidate_row_1][col],
+                                  s2->m[candidate_row_2][col])) {
+      return CLAY_ERROR_WRONG_COEFF;
+    }
+  }
+  clay_util_relation_negate_row(s2, candidate_row_2);
+
+  // All preconditions are met, now we may remove the inequality and the
+  // second relation.
+
+  *row_index1 = candidate_row_1;
+  *row_index2 = candidate_row_2;
+  return CLAY_SUCCESS;
+}
+
 // FIXME: this is almost a copy of clay_collapse()
 int chlore_collapsing_lines(osl_scop_p scop, clay_array_p beta,
                             clay_list_p found_betas, clay_array_p row_indices) {
-  int i, row, col, row_1, row_2;
-  int candidate_row_1, candidate_row_2;
+  int i, candidate_row1, candidate_row2, result;
   int nb_pairs;
   clay_array_p first_beta, second_beta, max_beta;
-  clay_array_p matched_rows_2;
   clay_list_p matching_betas = clay_list_malloc();
   osl_statement_p statement, first_statement, second_statement;
   osl_relation_p scattering, s1, s2;
@@ -252,108 +604,192 @@ int chlore_collapsing_lines(osl_scop_p scop, clay_array_p beta,
     }
     clay_array_free(second_beta);
 
-    // Check scattering parameters are compatible.
-    if (!s1 || !s2 ||
-        s1->nb_rows != s2->nb_rows ||
-        s1->nb_input_dims != s2->nb_input_dims ||
-        s1->nb_output_dims != s2->nb_output_dims ||
-        s1->nb_local_dims != s2->nb_local_dims ||
-        s1->nb_parameters != s2->nb_parameters) {
+    result = chlore_relation_collapsing_lines(s1, s2, &candidate_row1, &candidate_row2);
+    if (result != CLAY_SUCCESS) {
       clay_list_free(matching_betas);
-      return CLAY_ERROR_WRONG_COEFF; // FIXME: local dimensions can be merged
+      return result;
     }
-
-    // Check all equalities are the same (in normalized form, equations come
-    // before inequalities, sorted lexicographically so that line by line
-    // comparison is possible.
-    for (row = 0; row < s1->nb_rows; row++) {
-      if (clay_util_is_row_beta_definition(s1, row)) {
-        continue; // ignore beta rows that are already compare by beta-matching
-      }
-      if (osl_int_one(s1->precision, s1->m[row][0])) {
-        break; // inequality part started
-      }
-      for (col = 0; col < s1->nb_columns; col++) {
-        if (osl_int_ne(s1->precision, s1->m[row][col], s2->m[row][col])) {
-          clay_list_free(matching_betas);
-          return CLAY_ERROR_WRONG_COEFF;
-        }
-      }
-    }
-
-    matched_rows_2 = clay_array_malloc();
-    candidate_row_1 = -1;
-    for (row_1 = row; row_1 < s1->nb_rows; row_1++) {
-      int matched_row = -1;
-      for (row_2 = row; row_2 < s2->nb_rows; row_2++) {
-        int mismatch = 0;
-
-        // Skip if row is already matched.
-        if (clay_array_contains(matched_rows_2, row_2)) {
-          continue;
-        }
-
-        for (col = 0; col < s1->nb_columns; col++) {
-          if (osl_int_ne(s1->precision,
-                         s1->m[row_1][col], s2->m[row_2][col])) {
-            mismatch = 1;
-            break;
-          }
-        }
-        if (!mismatch) {
-          matched_row = row_2;
-          clay_array_add(matched_rows_2, row_2);
-          break;
-        }
-      }
-
-      // If no row matched,
-      if (matched_row == -1) {
-        if (candidate_row_1 != -1) { // Cannot have two unmatching rows.
-          clay_array_free(matched_rows_2);
-          clay_list_free(matching_betas);
-          return CLAY_ERROR_WRONG_COEFF;
-        }
-        candidate_row_1 = row_1;
-      }
-    }
-
-    // Find the single unmatched row in s2.
-    candidate_row_2 = -1;
-    for (row_2 = row; row_2 < s2->nb_rows; row_2++) {
-      if (!clay_array_contains(matched_rows_2, row_2)) {
-        candidate_row_2 = row_2;
-        break;
-      }
-    }
-    clay_array_free(matched_rows_2);
-    if (candidate_row_2 == -1) {
-      // XXX: Something went wrong...
-      clay_list_free(matching_betas);
-      return CLAY_ERROR_WRONG_COEFF;
-    }
-
-    // Check if unmatched rows differ up to negation.
-    clay_util_relation_negate_row(s2, candidate_row_2);
-    for (col = 0; col < s1->nb_columns; col++) {
-      if (osl_int_ne(s1->precision, s1->m[candidate_row_1][col],
-                                    s2->m[candidate_row_2][col])) {
-        clay_list_free(matching_betas);
-        return CLAY_ERROR_WRONG_COEFF;
-      }
-    }
-    clay_util_relation_negate_row(s2, candidate_row_2);
-
-    // All preconditions are met, now we may remove the inequality and the
-    // second relation.
 
     clay_list_add(found_betas, clay_beta_extract(s1));
-    clay_array_add(row_indices, candidate_row_1);
+    clay_array_add(row_indices, candidate_row1);
   }
 
   clay_list_free(matching_betas);
   return CLAY_SUCCESS;
 }
+
+// Assumes normalized betas.
+int chlore_last_statement_beta_dim(osl_scop_p scop, clay_array_p beta) { // XXX: use tree instead
+  int last_statement_beta_dim = 0;
+  for (osl_statement_p statement = scop->statement; statement != NULL; statement = statement->next) {
+    for (osl_relation_p scattering = statement->scattering; scattering != NULL; scattering = scattering->next) {
+      if (clay_beta_check_relation(scattering, beta)) {
+        clay_array_p scattering_beta = clay_beta_extract(scattering);
+        if (scattering_beta->size > beta->size) {
+          last_statement_beta_dim = std::max(last_statement_beta_dim, scattering_beta->data[beta->size]);
+        }
+        clay_array_free(scattering_beta);
+      }
+    }
+  }
+  return last_statement_beta_dim;
+}
+
+void chlore_put_statement_last(osl_scop_p scop, int last_statement_beta_dim, clay_array_p beta,
+                               std::vector<ChloreBetaTransformation> &commands, clay_options_p options) {
+  int statement_beta_dim = beta->data[beta->size - 1];
+  clay_array_p reorder_list = clay_array_malloc();
+  for (int i = 0; i <= last_statement_beta_dim; i++) {
+    if (i < statement_beta_dim) {
+      clay_array_add(reorder_list, i);
+    } else if (i == statement_beta_dim) {
+      clay_array_add(reorder_list, last_statement_beta_dim);
+    } else {
+      clay_array_add(reorder_list, i - 1);
+    }
+  }
+
+  ChloreBetaTransformation transformation;
+  beta->size -= 1;
+  transformation.kind = ChloreBetaTransformation::REORDER;
+  transformation.target = ClayArray::copy(beta);
+  transformation.order = ClayArray::copy(reorder_list);
+  commands.push_back(transformation);
+  clay_reorder(scop, beta, reorder_list, options);
+  beta->size += 1;
+
+  clay_array_free(reorder_list);
+}
+
+clay_array_p chlore_detach_statement_from_loop(osl_scop_p scop, clay_array_p beta,
+                                               std::vector<ChloreBetaTransformation> &commands, clay_options_p options) {
+  clay_array_p current_beta = clay_array_clone(beta);
+  int statement_beta_dim = current_beta->data[current_beta->size - 1];
+  int last_statement_beta_dim;
+  current_beta->size -= 1;
+  last_statement_beta_dim = chlore_last_statement_beta_dim(scop, current_beta);
+  current_beta->size += 1;
+
+  // already last, no need to do anything
+  if (statement_beta_dim != last_statement_beta_dim) {
+    // put last
+    chlore_put_statement_last(scop, last_statement_beta_dim, current_beta, commands, options);
+
+    current_beta->data[current_beta->size - 1] = last_statement_beta_dim - 1;
+    ChloreBetaTransformation splitting;
+    splitting.kind = ChloreBetaTransformation::SPLIT;
+    splitting.depth = current_beta->size - 1;
+    splitting.target = ClayArray::copy(current_beta);
+    commands.push_back(splitting);
+    clay_split(scop, current_beta, current_beta->size - 1, options);
+
+    current_beta->size -= 1;
+    current_beta->data[current_beta->size - 1] += 1;
+    //current_beta->data[current_beta->size - 1] = 0;
+  } else {
+    current_beta->size -= 1;
+  }
+
+  return current_beta;
+}
+
+clay_array_p chlore_detach_statement_until_depth(osl_scop_p scop, clay_array_p beta, int depth,
+                                                 std::vector<ChloreBetaTransformation> &commands, clay_options_p options) {
+  clay_array_p current_beta = clay_array_clone(beta);
+  while (current_beta->size > depth) {
+    clay_array_p old_pointer = current_beta;
+    current_beta = chlore_detach_statement_from_loop(scop, current_beta, commands, options);
+    clay_array_free(old_pointer);
+  }
+  return current_beta;
+}
+
+// Returns a beta-prefix for which collapsing is possible.
+clay_array_p chlore_collapsing(osl_scop_p scop, osl_statement_p statement,
+                               std::vector<ChloreBetaTransformation> &commands, clay_options_p options,
+                               clay_list_p found_betas, clay_array_p row_indices) {
+  int r1, r2, result;
+  clay_array_p beta1 = NULL;
+  clay_array_p beta2 = NULL;
+  clay_array_p collapsing_prefix = NULL;
+  if (!statement || !statement->scattering)
+    return NULL;
+
+  osl_relation_p first_relation, second_relation;
+  for (osl_relation_p s1 = statement->scattering; s1 != NULL; s1 = s1->next) {
+    for (osl_relation_p s2 = s1->next; s2 != NULL; s2 = s2->next) {
+      result = chlore_relation_collapsing_lines(s1, s2, &r1, &r2);
+      if (result == CLAY_SUCCESS) {
+        beta1 = clay_beta_extract(s1);
+        beta2 = clay_beta_extract(s2);
+        first_relation = s1;
+        second_relation = s2;
+        break;
+      }
+    }
+  }
+
+  if (beta1 != NULL && beta2 != NULL) {
+    clay_array_p prefix = chlore_beta_prefix(beta1, beta2);
+
+    int result = chlore_collapsing_lines(scop, prefix, found_betas, row_indices);
+    if (result == CLAY_SUCCESS) {
+      // just do it! no need for split/reorder
+      collapsing_prefix = prefix;
+    } else {
+      // separate statements into a single loop by reordering them to the end, and then splitting the loop
+      int common_prefix_length = prefix->size;
+      if (common_prefix_length == 0) common_prefix_length = 1;
+
+      clay_array_p reordered_beta_1 = chlore_detach_statement_until_depth(scop, beta1, common_prefix_length, commands, options);
+      // beta2 may have changed....
+      clay_array_free(beta2);
+      beta2 = clay_beta_extract(second_relation);
+      clay_array_p reordered_beta_2 = chlore_detach_statement_until_depth(scop, beta2, common_prefix_length, commands, options);
+
+      // put reordered_beta_2 right after reordered_beta_1
+      reordered_beta_1->size -= 1;
+      int last_statement_beta_dim = chlore_last_statement_beta_dim(scop, reordered_beta_1);
+      reordered_beta_1->size += 1;
+      if (last_statement_beta_dim > 1) { // if there are only two statements, the are already adjacent
+        chlore_put_statement_last(scop, last_statement_beta_dim, reordered_beta_1, commands, options);
+        int old_size  = reordered_beta_2->size;
+        clay_array_free(reordered_beta_2);
+        reordered_beta_2 = clay_beta_extract(second_relation);
+        reordered_beta_2->size = old_size;
+        chlore_put_statement_last(scop, last_statement_beta_dim, reordered_beta_2, commands, options);
+      }
+
+      // then fuse_next reordered_beta_1 thus creating a new loop with both statements
+      int old_size = reordered_beta_1->size;
+      clay_array_free(reordered_beta_1);
+      reordered_beta_1 = clay_beta_extract(first_relation);
+      reordered_beta_1->size = old_size;
+
+      ChloreBetaTransformation fusion;
+      fusion.kind = ChloreBetaTransformation::FUSE;
+      fusion.target = ClayArray::copy(reordered_beta_1);
+      fusion.first_loop_size = chlore_last_statement_beta_dim(scop, reordered_beta_1);
+      commands.push_back(fusion);
+      clay_fuse(scop, reordered_beta_1, options);
+
+      // may now collapse reordered_beta_1 loop
+      collapsing_prefix = reordered_beta_1;
+      clay_array_free(reordered_beta_2);
+
+      chlore_collapsing_lines(scop, collapsing_prefix, found_betas, row_indices);
+    }
+
+    if (collapsing_prefix != prefix) {
+      clay_array_free(prefix);
+    }
+    clay_array_free(beta1);
+    clay_array_free(beta2);
+  }
+
+  return collapsing_prefix;
+}
+
 
 // FIXME: this is almost a copy of clay_linearize
 int chlore_linearizable_lines(osl_scop_p scop, clay_array_p beta, int depth,
@@ -550,20 +986,16 @@ int chlore_densifiable(osl_scop_p scop, clay_array_p beta, int depth,
   return CLAY_SUCCESS;
 }
 
-clay_list_p chlore_extract_iss_line(osl_scop_p scop, clay_array_p beta) {
+clay_list_p chlore_extract_iss_line(osl_scop_p scop, clay_list_p found_betas, clay_array_p row_indices) {
   int i, j;
-  clay_list_p found_betas  = clay_list_malloc();
   clay_list_p result = clay_list_malloc();
   clay_array_p output = clay_array_malloc();
   clay_array_p input = clay_array_malloc();
   clay_array_p parameters = clay_array_malloc();
   clay_array_p constant = clay_array_malloc();
-  clay_array_p row_indices = clay_array_malloc();
   osl_statement_p statement;
   osl_relation_p scattering;
   int error = 0;
-
-  chlore_collapsing_lines(scop, beta, found_betas, row_indices);
 
   if (found_betas->size == 0) {
     return NULL;
@@ -647,8 +1079,6 @@ clay_list_p chlore_extract_iss_line(osl_scop_p scop, clay_array_p beta) {
     return NULL;
   }
 
-  clay_list_free(found_betas);
-  clay_array_free(row_indices);
   return result;
 }
 
@@ -735,109 +1165,6 @@ int chlore_extract_grain(osl_scop_p scop, clay_array_p beta, int depth) {
   return grain;
 }
 
-// TODO: move to clay
-int clay_list_equal(clay_list_p l1, clay_list_p l2) {
-  int i;
-
-  if (l1->size != l2->size)
-    return 0;
-
-  for (i = 0; i < l1->size; i++) {
-    if (!clay_array_equal(l1->data[i], l2->data[i]))
-      return 0;
-  }
-
-  return 1;
-}
-
-template <typename Func, typename... Args>
-int chlore_try_transformation(osl_scop_p scop, Func transformation, Args... arguments) {
-  osl_scop_p copy = osl_scop_clone(scop);
-
-  int result = transformation(scop, arguments...);
-  int success = result == CLAY_SUCCESS;
-  success = success && !osl_scop_equal(copy, scop);
-  osl_scop_free(copy);
-  return success;
-}
-
-template <typename T, T *(creator)(), void (deleter)(T *),
-          T *(cloner)(T *), int (equality)(T *, T *), char *(printer)(T *)>
-class OSLContainer {
-public:
-  OSLContainer() {
-    object = creator();
-  }
-
-  OSLContainer(T *other) {
-    object = other;
-  }
-
-  OSLContainer(const OSLContainer &other) {
-    object = cloner(other.object);
-  }
-
-  OSLContainer(T &&other) {
-    object = other.object;
-    other.object = nullptr;
-  }
-
-  ~OSLContainer() {
-    deleter(object);
-  }
-
-  OSLContainer &operator = (const OSLContainer &other) {
-    deleter(object);
-    object = cloner(other.object);
-    return *this;
-  }
-
-  bool operator == (const OSLContainer &other) const {
-    return equality(object, other.object);
-  }
-
-  bool operator != (const OSLContainer &other) const {
-    return !equality(object, other.object);
-  }
-
-  operator T *() {
-    return object;
-  }
-
-  operator T &() {
-    return *object;
-  }
-
-  friend std::ostream &operator <<(std::ostream &out, const OSLContainer &container) {
-    char *cstring = printer(container.object);
-    out << cstring;
-    free(cstring);
-    return out;
-  }
-
-private:
-  T *object;
-};
-
-typedef OSLContainer<clay_array_t, clay_array_malloc, clay_array_free, clay_array_clone, clay_array_equal, clay_array_string> ClayArray;
-typedef OSLContainer<clay_list_t, clay_list_malloc, clay_list_free, clay_list_clone, clay_list_equal, clay_list_string> ClayList;
-
-template <typename T>
-void vector_remove_duplicates(std::vector<T> &data) {
-  std::set<size_t> to_remove;
-  for (size_t i = 0, ei = data.size(); i < ei; i++) {
-    for (size_t j = i + 1, ej = data.size(); j < ej; j++) {
-      if (data[i] == data[j]) {
-        to_remove.insert(j);
-      }
-    }
-  }
-
-  for (auto it = to_remove.rbegin(), eit = to_remove.rend(); it != eit; it++) {
-    data.erase(data.begin() + *it);
-  }
-}
-
 template <typename T>
 void vector_pair_remove_identical_items(std::vector<T> &v1, std::vector<T> &v2) {
   for (size_t i = 0; i < v1.size(); i++) {
@@ -853,32 +1180,24 @@ void vector_pair_remove_identical_items(std::vector<T> &v1, std::vector<T> &v2) 
   }
 }
 
-std::vector<std::tuple<ClayArray, ClayList>>
-lookup_iss_conditions(osl_scop_p scop, osl_statement_p statement) {
-  osl_relation_p scattering;
-  std::vector<std::tuple<ClayArray, ClayList>> collapsing;
+optional<std::tuple<ClayArray, ClayList>>
+lookup_iss_conditions(osl_scop_p scop, osl_statement_p statement,
+                      std::vector<ChloreBetaTransformation> &commands, clay_options_p options) {
+  clay_list_p found_betas = clay_list_malloc();
+  clay_array_p row_indices = clay_array_malloc();
 
-  for (scattering = statement->scattering; scattering != NULL;
-       scattering = scattering->next) {
-    clay_array_p beta = clay_beta_extract(scattering);
-    int limit_depth = beta->size - 1;
+  clay_array_p beta = chlore_collapsing(scop, statement, commands, options, found_betas, row_indices);
+//  chlore_collapsing_lines(scop, beta, found_betas, row_indices);
+  clay_list_p condition = chlore_extract_iss_line(scop, found_betas, row_indices);
 
-    for (int depth = 1; depth <= limit_depth; depth++) {
-      beta->size = depth;
-
-      // Check for betas at all depths.
-      clay_list_p condition = chlore_extract_iss_line(scop, beta);
-      if (condition) {
-        collapsing.push_back(std::make_tuple(ClayArray(clay_array_clone(beta)),
-                                             ClayList(condition)));
-      }
-    }
-    clay_array_free(beta);
+  clay_list_free(found_betas);
+  clay_array_free(row_indices);
+  if (condition) {
+    return make_optional(std::make_tuple(ClayArray(clay_array_clone(beta)),
+                         ClayList(condition)));
+  } else {
+    return make_empty<std::tuple<ClayArray, ClayList>>();
   }
-
-  vector_remove_duplicates(collapsing);
-
-  return collapsing;
 }
 
 std::vector<std::tuple<ClayArray, int, int>>
@@ -1207,40 +1526,69 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
   for (i = 0; i < nb_stmts; i++) {
 
     while (1) {
+      // FIXME: new iss+split/fuse
+//      clay_array_p beta = chlore_collapsing(original, original_stmt, commands, options);
+//      if (beta) {
+//        for (auto s : commands) {
+//          std::cout << s;
+//        }
+//        std::cout << "collapse " << ClayArray::copy(beta) << "\n";
+//        clay_collapse(original, beta, options);
+//      }
+//      std::cout << "===" << std::endl;
+
+
       // Try for iss
-      std::vector<std::tuple<ClayArray, ClayList>> original_iss =
-        lookup_iss_conditions(original, original_stmt);
-      std::vector<std::tuple<ClayArray, ClayList>> transformed_iss =
-        lookup_iss_conditions(transformed, transformed_stmt);
+      std::vector<ChloreBetaTransformation> original_commands, transformed_commands;
+      optional<std::tuple<ClayArray, ClayList>> original_iss =
+        lookup_iss_conditions(original, original_stmt, original_commands, options);
 
-      // If same condition is present on both sides, it is not a part of
-      // transformation sequence.
-      vector_pair_remove_identical_items(original_iss, transformed_iss);
+      // TODO: we also have to try finding all possible isses, not only one? ++ if on both sides, do not include; -- requires multiple calls for reorder with hardly predictable effect on beta-vectors.
 
-      for (auto const &data : original_iss) {
+      optional<std::tuple<ClayArray, ClayList>> transformed_iss =
+        lookup_iss_conditions(transformed, transformed_stmt, transformed_commands, options);
+
+      if (original_iss) {
+        auto original_tuple = static_cast<std::tuple<ClayArray, ClayList>>(original_iss);
+
         ClayArray beta;
-        std::tie(beta, std::ignore) = data;
+        std::tie(beta, std::ignore) = original_tuple;
 
         std::stringstream ss;
+        for (const ChloreBetaTransformation &command : original_commands) {
+          ss << command;
+          first.push_back(ss.str());
+          ss.str("");
+        }
+
         ss << "collapse " << beta << "\n";
         first.push_back(ss.str());
 
         clay_collapse(original, beta, options);
+
       }
-      for (auto const &data : transformed_iss) {
+
+      if (transformed_iss) {
+        auto transformed_tuple = static_cast<std::tuple<ClayArray, ClayList>>(transformed_iss);
+
         ClayArray beta;
         ClayList condition;
-        std::tie(beta, condition) = data;
+        std::tie(beta, condition) = transformed_tuple;
 
         std::stringstream ss;
+        std::deque<ChloreBetaTransformation> inverted_commands = chlore_complementary_beta_transformation(transformed_commands);
+        for (auto it = inverted_commands.rbegin(), eit = inverted_commands.rend(); it != eit; ++it) {
+          ss << *it;
+          last.push_front(ss.str());
+          ss.str("");
+        }
+
         ss << "iss " << beta << " " << condition << "\n";
         last.push_front(ss.str());
-
         clay_collapse(transformed, beta, options);
       }
 
-      if (original_iss.size() != 0 ||
-          transformed_iss.size() != 0) {
+      if (original_iss || transformed_iss) {
         continue;
       }
 
