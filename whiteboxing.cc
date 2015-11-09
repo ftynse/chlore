@@ -212,6 +212,7 @@ chlore_complementary_beta_transformation(std::vector<ChloreBetaTransformation> s
     case ChloreBetaTransformation::REORDER:
     {
       new_transformation.kind = ChloreBetaTransformation::REORDER;
+      new_transformation.target = transformation.target;
       clay_array_p old_order = static_cast<clay_array_p>(transformation.order);
       clay_array_p new_order = clay_array_clone(transformation.order);
       for (int i = 0; i < old_order->size; i++) {
@@ -725,6 +726,7 @@ void chlore_put_statement_last(osl_scop_p scop, int last_statement_beta_dim, cla
     }
   }
 
+
   ChloreBetaTransformation transformation;
   beta->size -= 1;
   transformation.kind = ChloreBetaTransformation::REORDER;
@@ -745,7 +747,7 @@ void chlore_put_statement_first(osl_scop_p scop, clay_array_p beta,
   beta->size += 1;
 
   clay_array_p reorder_list = clay_array_malloc();
-  for (int i = 0; i < last_statement_beta_dim; i++) {
+  for (int i = 0; i <= last_statement_beta_dim; i++) {
     if (i < statement_beta_dim) {
       clay_array_add(reorder_list, i + 1);
     } else if (i == statement_beta_dim) {
@@ -1340,6 +1342,17 @@ lookup_iss_conditions(osl_scop_p scop, osl_statement_p statement,
 //  chlore_collapsing_lines(scop, beta, found_betas, row_indices);
   clay_list_p condition = chlore_extract_iss_line(scop, found_betas, row_indices);
 
+  if (condition) {
+    assert(condition->size == 4);
+    // Negate condition because lexicographically first beta after iss in clay has a negated condition.
+    for (int i = 0; i < 3; i++) {
+      for (int j = 0; j < condition->data[i]->size; j++) {
+        condition->data[i]->data[j] = -condition->data[i]->data[j];
+      }
+    }
+    condition->data[3]->data[0] = -condition->data[3]->data[0] - 1;
+  }
+
   clay_list_free(found_betas);
   clay_array_free(row_indices);
   if (condition) {
@@ -1799,7 +1812,7 @@ void chlore_fix_beta_at_dept2(osl_scop_p original, osl_scop_p transformed,
 
     // Reorder after the target position and fuse (something already has the required beta-prefix;
     // if it is not used after, it will be split away).
-    if (last_transformed_child_beta > split_beta->data[prefix->size]) {
+    if (last_transformed_child_beta != split_beta->data[prefix->size]) {
       assert(transformed_beta->data[prefix->size] <= last_original_child_beta); // if not, just put the statement last in the loop...
       if (split_beta->data[prefix->size] != transformed_beta->data[prefix->size] + 1) { // Do not reorder if already there
         int old_size = split_beta->size;
@@ -1829,11 +1842,7 @@ void chlore_fix_beta_at_dept2(osl_scop_p original, osl_scop_p transformed,
         }
         split_beta->size = old_size;
       }
-    } else {
-      chlore_info_message("don't know what to with the beta, non-contiguous with the transformed scop betas");
-      assert(false);
     }
-
     clay_array_free(split_beta);
 
     // beta-vectors might have changed, so we must restart the inner loop
@@ -2039,8 +2048,9 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         continue;
       }
 
-      osl_scop_normalize_scattering(original);
-      osl_scop_normalize_scattering(transformed);
+      clay_scop_normalize(original);
+      clay_scop_normalize(transformed);
+
 
       // Shifts
       std::tuple<ClayArray, int, ClayArray, int> potential_shift =
