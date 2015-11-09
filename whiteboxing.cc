@@ -417,6 +417,82 @@ int chlore_check_compatible(osl_scop_p original, osl_scop_p transformed) {
   return 1;
 }
 
+int chlore_check_minimal(osl_relation_p relation) {
+  int idx = 0;
+  for (int row = 0; row < relation->nb_rows; row++) {
+    if (clay_util_is_row_beta_definition(relation, row))
+      continue;
+    if (!osl_int_zero(relation->precision,
+                      relation->m[row][0])) {
+      chlore_info_message("relation contains an inequality");
+      return 0;  // not an equation
+    }
+    for (int j = 1; j < relation->nb_columns; j++) {
+      if (j == 1 + row) {
+        if (!osl_int_mone(relation->precision,
+                          relation->m[row][j])) {
+          chlore_info_message("output dim is not -1");
+          return 0;
+        }
+      } else if (j == 1 + relation->nb_output_dims + idx) {
+        if (!osl_int_one(relation->precision,
+                        relation->m[row][j])) {
+          chlore_info_message("input dim is not 1");
+          return 0;
+        }
+      } else if (!osl_int_zero(relation->precision,
+                               relation->m[row][j])) {
+        chlore_info_message("unexpected non-zero value");
+        return 0;
+      }
+    }
+    idx++;
+  }
+  return 1;
+}
+
+int chlore_check_structure_compatible(osl_scop_p original, osl_scop_p transformed) {
+  if (original == NULL) {
+    chlore_info_message("Original scop is null");
+    return 0;
+  }
+  if (transformed == NULL) {
+    chlore_info_message("Transformed scop is null");
+    return 0;
+  }
+
+  osl_statement_p original_stmt = original->statement,
+                  transformed_stmt = transformed->statement;
+  for ( ;
+       original_stmt != NULL && transformed_stmt != NULL;
+       original_stmt = original_stmt->next, transformed_stmt = transformed_stmt->next) {
+    osl_relation_p original_rel = original_stmt->scattering,
+                   transformed_rel = transformed_stmt->scattering;
+    for ( ;
+         original_rel != NULL && transformed_rel != NULL;
+         original_rel = original_rel->next, transformed_rel = transformed_rel->next) {
+      if (!chlore_check_minimal(original_rel))
+        return 0;
+      if (!chlore_check_minimal(transformed_rel))
+        return 0;
+      if (original_rel->nb_output_dims != transformed_rel->nb_output_dims) {
+        chlore_info_message("relation dimensionality mismatch");
+        return 0;
+      }
+    }
+    if ((original_rel == NULL) ^ (transformed_rel == NULL)) {
+      chlore_info_message("scattering union cardinality mismatch");
+      return 0;
+    }
+  }
+  if ((original_stmt == NULL) ^ (transformed_stmt == NULL)) {
+    chlore_info_message("statement number mismatch");
+    return 0;
+  }
+
+  return 1;
+}
+
 int chlore_relation_collapsing_lines(osl_relation_p s1, osl_relation_p s2,
                                      int *row_index1, int *row_index2) {
   int row, col, row_1, row_2;
@@ -618,9 +694,9 @@ int chlore_collapsing_lines(osl_scop_p scop, clay_array_p beta,
   return CLAY_SUCCESS;
 }
 
-// Assumes normalized betas.
+// Assumes normalized betas, returns -1 if no children
 int chlore_last_statement_beta_dim(osl_scop_p scop, clay_array_p beta) { // XXX: use tree instead
-  int last_statement_beta_dim = 0;
+  int last_statement_beta_dim = -1;
   for (osl_statement_p statement = scop->statement; statement != NULL; statement = statement->next) {
     for (osl_relation_p scattering = statement->scattering; scattering != NULL; scattering = scattering->next) {
       if (clay_beta_check_relation(scattering, beta)) {
@@ -646,6 +722,80 @@ void chlore_put_statement_last(osl_scop_p scop, int last_statement_beta_dim, cla
       clay_array_add(reorder_list, last_statement_beta_dim);
     } else {
       clay_array_add(reorder_list, i - 1);
+    }
+  }
+
+  ChloreBetaTransformation transformation;
+  beta->size -= 1;
+  transformation.kind = ChloreBetaTransformation::REORDER;
+  transformation.target = ClayArray::copy(beta);
+  transformation.order = ClayArray::copy(reorder_list);
+  commands.push_back(transformation);
+  clay_reorder(scop, beta, reorder_list, options);
+  beta->size += 1;
+
+  clay_array_free(reorder_list);
+}
+
+void chlore_put_statement_first(osl_scop_p scop, clay_array_p beta,
+                                std::vector<ChloreBetaTransformation> &commands, clay_options_p options) {
+  int statement_beta_dim = beta->data[beta->size - 1];
+  beta->size -= 1;
+  int last_statement_beta_dim = chlore_last_statement_beta_dim(scop, beta);
+  beta->size += 1;
+
+  clay_array_p reorder_list = clay_array_malloc();
+  for (int i = 0; i < last_statement_beta_dim; i++) {
+    if (i < statement_beta_dim) {
+      clay_array_add(reorder_list, i + 1);
+    } else if (i == statement_beta_dim) {
+      clay_array_add(reorder_list, 0);
+    } else {
+      clay_array_add(reorder_list, i);
+    }
+  }
+
+  ChloreBetaTransformation transformation;
+  beta->size -= 1;
+  transformation.kind = ChloreBetaTransformation::REORDER;
+  transformation.target = ClayArray::copy(beta);
+  transformation.order = ClayArray::copy(reorder_list);
+  commands.push_back(transformation);
+  clay_reorder(scop, beta, reorder_list, options);
+  beta->size += 1;
+
+  clay_array_free(reorder_list);
+
+}
+
+void chlore_put_statement_after(osl_scop_p scop, int location, clay_array_p beta,
+                                std::vector<ChloreBetaTransformation> &commands, clay_options_p options) {
+  int statement_beta_dim = beta->data[beta->size - 1];
+  beta->size -= 1;
+  int last_statement_beta_dim = chlore_last_statement_beta_dim(scop, beta);
+  beta->size += 1;
+
+  if (statement_beta_dim > location) {
+    clay_array_p new_beta = clay_array_clone(beta);
+    std::swap(new_beta->data[new_beta->size - 1], location);
+    chlore_put_statement_after(scop, location, new_beta, commands, options);
+    clay_array_free(new_beta);
+    return;
+  }
+
+  clay_array_p reorder_list = clay_array_malloc();
+  for (int i = 0; i <= last_statement_beta_dim; i++) {
+    clay_array_add(reorder_list, 0);
+  }
+
+  for (int i = 0; i <= last_statement_beta_dim; i++) {
+    clay_array_add(reorder_list, i);
+    if (i > statement_beta_dim && i <= location) {
+      reorder_list->data[i] = i - 1;
+    } else if (i == statement_beta_dim) {
+      reorder_list->data[i] = location;
+    } else {
+      reorder_list->data[i] = i;
     }
   }
 
@@ -1500,6 +1650,234 @@ lookup_diagonal_elements(osl_statement_p statement) {
   return std::make_tuple(ClayArray(), TRANSFORMATION_NOT_FOUND, -1);
 }
 
+static optional<std::pair<ClayArray, ClayArray>> chlore_find_first_beta_mismatch(
+    osl_scop_p original, osl_scop_p transformed, clay_array_p prefix) {
+  osl_statement_p original_stmt = original->statement;
+  osl_statement_p transformed_stmt = transformed->statement;
+
+  int nb_stmts = 0;
+  for (osl_statement_p s = original->statement; s != NULL; s = s->next) {
+    ++nb_stmts;
+  }
+
+  for (int i = 0; i < nb_stmts; i++) {
+    int nb_scatterings = 0;
+    for (osl_relation_p r = original_stmt->scattering; r != NULL; r = r->next)
+      ++nb_scatterings;
+
+    osl_relation_p original_rel = original_stmt->scattering;
+    osl_relation_p transformed_rel = transformed_stmt->scattering;
+    for (int j = 0; j < nb_scatterings; j++) {
+
+      if (clay_beta_check_relation(transformed_rel, prefix)) {
+        clay_array_p original_beta = clay_beta_extract(original_rel);
+        clay_array_p transformed_beta = clay_beta_extract(transformed_rel);
+        assert(transformed_beta->size >= prefix->size);
+        assert(original_beta->size >= prefix->size);
+        // Too long for a prefix
+        if (transformed_beta->size == prefix->size) {
+          clay_array_free(original_beta);
+          clay_array_free(transformed_beta);
+          continue;
+        }
+        for (int k = 0; k < prefix->size + 1; k++) {
+          if (transformed_beta->data[k] != original_beta->data[k]) {
+            return make_optional(std::make_pair(ClayArray(original_beta), ClayArray(transformed_beta)));
+          }
+        }
+        // Full prefix match, location is already correct at this depth
+      }
+
+      original_rel = original_rel->next;
+      transformed_rel = transformed_rel->next;
+    }
+
+    original_stmt = original_stmt->next;
+    transformed_stmt = transformed_stmt->next;
+  }
+
+  return make_empty<std::pair<ClayArray, ClayArray>>();
+}
+
+static clay_array_p chlore_find_first_split_away(
+    osl_scop_p original, osl_scop_p transformed, clay_array_p prefix) {
+  osl_statement_p original_stmt = original->statement;
+  osl_statement_p transformed_stmt = transformed->statement;
+
+  int nb_stmts = 0;
+  for (osl_statement_p s = original->statement; s != NULL; s = s->next) {
+    ++nb_stmts;
+  }
+
+  for (int i = 0; i < nb_stmts; i++) {
+    int nb_scatterings = 0;
+    for (osl_relation_p r = original_stmt->scattering; r != NULL; r = r->next)
+      ++nb_scatterings;
+
+    osl_relation_p original_rel = original_stmt->scattering;
+    osl_relation_p transformed_rel = transformed_stmt->scattering;
+    for (int j = 0; j < nb_scatterings; j++) {
+
+      if (clay_beta_check_relation(original_rel, prefix)) {
+        if (!clay_beta_check_relation(transformed_rel, prefix)) {
+          return clay_beta_extract(original_rel);
+        }
+      }
+
+      original_rel = original_rel->next;
+      transformed_rel = transformed_rel->next;
+    }
+
+    original_stmt = original_stmt->next;
+    transformed_stmt = transformed_stmt->next;
+  }
+
+  return NULL;
+}
+
+void chlore_fix_beta_at_depth(osl_scop_p original, osl_scop_p transformed,
+                              std::vector<ChloreBetaTransformation> &commands, clay_options_p options,
+                              clay_array_p child_prefix, clay_array_p prefix) {
+  while (true) {
+    clay_array_p original_beta;
+    optional<std::pair<ClayArray, ClayArray>> mismatch = chlore_find_first_beta_mismatch(original, transformed, child_prefix);
+    if (!mismatch) {
+      break;
+    }
+    std::tie(original_beta, std::ignore) = static_cast<std::pair<ClayArray, ClayArray>>(mismatch);
+
+    chlore_detach_statement_until_depth(original, original_beta, child_prefix->size, commands, options); // TODO check depth is correct or needs -1
+
+    int nb_original_children = chlore_last_statement_beta_dim(original, prefix);
+    assert (nb_original_children >= original_beta->data[prefix->size]);
+    if (nb_original_children != original_beta->data[prefix->size]) {
+      int old_size = original_beta->size;
+      original_beta->size = child_prefix->size;
+      chlore_put_statement_after(original, child_prefix->data[child_prefix->size - 1], original_beta, commands, options);
+      original_beta->size = old_size;
+
+      // TODO: is fusion always necessary?
+      ChloreBetaTransformation fusion;
+      fusion.kind = ChloreBetaTransformation::FUSE;
+      fusion.target = ClayArray::copy(child_prefix);
+      // no need to compute undo statements here
+      //        fusion.first_loop_size = chlore_last_statement_beta_dim(scop, child_prefix);
+      commands.push_back(fusion);
+      clay_fuse(original, child_prefix, options);
+    }
+
+    // beta-vectors might have changed, so we must restart the inner loop
+  }
+
+  // Split away everything that has child_prefix in original, but not in transformed.
+  while (true) {
+    clay_array_p split_away_beta = chlore_find_first_split_away(original, transformed, child_prefix);
+    if (!split_away_beta) {
+      break;
+    }
+    chlore_detach_statement_until_depth(original, split_away_beta, child_prefix->size, commands, options); // TODO: check depth is correct or needs -1
+  }
+}
+
+void chlore_fix_beta_at_dept2(osl_scop_p original, osl_scop_p transformed,
+                              std::vector<ChloreBetaTransformation> &commands, clay_options_p options,
+                              clay_array_p prefix) {
+  while (true) {
+    clay_array_p original_beta, transformed_beta;
+    optional<std::pair<ClayArray, ClayArray>> mismatch
+        = chlore_find_first_beta_mismatch(original, transformed, prefix); // prefix [], depth 1.
+    if (!mismatch) {
+      break;
+    }
+    original_beta = static_cast<std::pair<ClayArray, ClayArray> &>(mismatch).first;
+    transformed_beta = static_cast<std::pair<ClayArray, ClayArray> &>(mismatch).second;
+
+    clay_array_p split_beta = chlore_detach_statement_until_depth(original, original_beta, prefix->size, commands, options);
+
+    int last_original_child_beta = chlore_last_statement_beta_dim(original, prefix);
+    int last_transformed_child_beta = chlore_last_statement_beta_dim(transformed, prefix);
+
+    // Reorder after the target position and fuse (something already has the required beta-prefix;
+    // if it is not used after, it will be split away).
+    if (last_transformed_child_beta > split_beta->data[prefix->size]) {
+      assert(transformed_beta->data[prefix->size] <= last_original_child_beta); // if not, just put the statement last in the loop...
+      if (split_beta->data[prefix->size] != transformed_beta->data[prefix->size] + 1) { // Do not reorder if already there
+        int old_size = split_beta->size;
+        split_beta->size = prefix->size + 1; //  find_first_mismatch returns only beta-vectors for which prefix is shorter than the vector, this is safe
+        chlore_put_statement_after(original, transformed_beta->data[prefix->size], split_beta, commands, options);
+        split_beta->size = old_size;
+      }
+
+      clay_array_p fusion_target = clay_array_clone(prefix);
+      clay_array_add(fusion_target, transformed_beta->data[prefix->size]);
+      ChloreBetaTransformation fusion;
+      fusion.kind   = ChloreBetaTransformation::FUSE;
+      fusion.target = ClayArray(fusion_target);
+      // no need to compute undo statements here, spare computation.
+      // fusion.first_loop_size = chlore_last_statement_beta_dim(scop, fusion_target);
+      commands.push_back(fusion);
+      clay_fuse(original, fusion_target, options);
+    } else if (last_transformed_child_beta == split_beta->data[prefix->size]){ // No need to fuse (remainigs will be split away if necessary)
+      if (split_beta->data[prefix->size] != transformed_beta->data[prefix->size]) {
+        int old_size = split_beta->size;
+        split_beta->size = prefix->size + 1;
+        if (transformed_beta->data[prefix->size] == 0) {
+          chlore_put_statement_first(original, split_beta, commands, options);
+        } else {
+          chlore_put_statement_after(original, transformed_beta->data[prefix->size] - 1,
+            split_beta, commands, options);
+        }
+        split_beta->size = old_size;
+      }
+    } else {
+      chlore_info_message("don't know what to with the beta, non-contiguous with the transformed scop betas");
+      assert(false);
+    }
+
+    clay_array_free(split_beta);
+
+    // beta-vectors might have changed, so we must restart the inner loop
+  }
+
+  // Split away everything that has prefix in original, but not in transformed.
+  while (true) {
+    clay_array_p split_away_beta = chlore_find_first_split_away(original, transformed, prefix);
+    if (!split_away_beta) {
+      break;
+    }
+    chlore_detach_statement_until_depth(original, split_away_beta, prefix->size, commands, options);
+  }
+}
+
+
+static void chlore_match_betas_r(osl_scop_p original, osl_scop_p transformed,
+                                 std::vector<ChloreBetaTransformation> &commands,
+                                 clay_options_p options, clay_array_p prefix) {
+  int nb_children = chlore_last_statement_beta_dim(transformed, prefix) + 1;
+  clay_array_p child_prefix = clay_array_clone(prefix);
+  clay_array_add(child_prefix, -1);
+  for (int i = 0; i < nb_children; i++) {
+    child_prefix->data[child_prefix->size - 1] = i;
+
+//    chlore_fix_beta_at_depth(original, transformed, commands, options, child_prefix, prefix);
+
+    chlore_fix_beta_at_dept2(original, transformed, commands, options, child_prefix);
+
+    chlore_match_betas_r(original, transformed, commands, options, child_prefix);
+  }
+  clay_array_free(child_prefix);
+}
+
+void chlore_match_betas(osl_scop_p original, osl_scop_p transformed,
+                        std::vector<ChloreBetaTransformation> &commands, clay_options_p options) {
+
+  clay_array_p empty_prefix = clay_array_malloc();
+  chlore_fix_beta_at_dept2(original, transformed, commands, options, empty_prefix);
+
+  chlore_match_betas_r(original, transformed, commands, options, empty_prefix);
+  clay_array_free(empty_prefix);
+}
+
 void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
   osl_statement_p stmt, original_stmt, transformed_stmt;
   int nb_stmts = 0;
@@ -1526,18 +1904,6 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
   for (i = 0; i < nb_stmts; i++) {
 
     while (1) {
-      // FIXME: new iss+split/fuse
-//      clay_array_p beta = chlore_collapsing(original, original_stmt, commands, options);
-//      if (beta) {
-//        for (auto s : commands) {
-//          std::cout << s;
-//        }
-//        std::cout << "collapse " << ClayArray::copy(beta) << "\n";
-//        clay_collapse(original, beta, options);
-//      }
-//      std::cout << "===" << std::endl;
-
-
       // Try for iss
       std::vector<ChloreBetaTransformation> original_commands, transformed_commands;
       optional<std::tuple<ClayArray, ClayList>> original_iss =
@@ -1592,6 +1958,9 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         continue;
       }
 
+      // TODO: stripmine/linearize are loop transormations and may be blocked if this loop
+      // was fused with non-stripmined loop.  Use the same separation technique as in
+      // iss/collapse to ensure it is always found.
 
       // Check for stripmine/linearize
       std::vector<std::tuple<ClayArray, int, int>> original_sizes =
@@ -1962,8 +2331,21 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
     transformed_stmt = transformed_stmt->next;
   }
 
+  // At this point, all relations should be in the minimal form with the smallest possible number of values.
+  // The only difference is in their beta-vectors, which may be fixed by split/fuse/reorder.
+  if (!chlore_check_structure_compatible(original, transformed)) {
+    fprintf(stderr, "Failed to recover alpha dimensions\n");
+    return;
+  }
+
+  std::vector<ChloreBetaTransformation> commands;
+  chlore_match_betas(original, transformed, commands, options);
+
   for (const std::string &s : first) {
     std::cout << s;
+  }
+  for (const ChloreBetaTransformation &transformation : commands) {
+    std::cout << transformation;
   }
   for (const std::string &s : last) {
     std::cout << s;
