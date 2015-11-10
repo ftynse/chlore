@@ -169,7 +169,9 @@ void reintroduce_betas(osl_scop_p scop) {
   cloog_options->f = -1;
   cloog_options->openscop = 1;
 
-  CloogInput *cloog_input = cloog_input_from_osl_scop(cloog_state, scop);
+  osl_scop_p linear_scop = osl_scop_remove_unions(scop);
+
+  CloogInput *cloog_input = cloog_input_from_osl_scop(cloog_state, linear_scop);
   CloogProgram *cloog_program = cloog_program_alloc(cloog_input->context, cloog_input->ud, cloog_options);
 
   cloog_program_generate(cloog_program, cloog_options);
@@ -179,14 +181,23 @@ void reintroduce_betas(osl_scop_p scop) {
   int extra_dims = (maximum_depth(cloog_program->loop) - 1) / 2;
   postprocess_mapping(mapping, extra_dims);
 
-  // TODO: remove unions to find betas for all scatterings, than recreate unions.
+  // We assume that after 'remove_unions" call the newly created statements have the
+  // same order as the linearized list of scattering relaions in the original SCoP.
   osl_statement_p stmt = scop->statement;
+  osl_relation_p scattering = stmt->scattering;
   for (auto it : mapping) {
+    assert(scattering != NULL);
     assert(stmt != NULL);
-    replace_beta(stmt->scattering, it.second);
-    stmt = stmt->next;
+    replace_beta(scattering, it.second);
+    if (scattering->next != NULL) {
+      scattering = scattering->next;
+    } else {
+      stmt = stmt->next;
+      scattering = stmt ? stmt->scattering : NULL;
+    }
   }
 
+  osl_scop_free(linear_scop);
   cloog_program_free(cloog_program);
   cloog_options_free(cloog_options);
   cloog_state_free(cloog_state);
