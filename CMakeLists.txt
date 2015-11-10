@@ -17,11 +17,13 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -std=c++11")
 
 find_package(osl REQUIRED)
 find_package(clay REQUIRED)
+find_package(cloog-isl REQUIRED)
 
 include_directories("${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 include_directories(${OSL_INCLUDE_DIR})
 include_directories(${CLAY_INCLUDE_DIR})
+include_directories(${CLOOG_ISL_INCLUDE_DIR})
 
 #file(GLOB_RECURSE
 #     sources
@@ -30,3 +32,8 @@ add_executable(chlore "${CMAKE_CURRENT_SOURCE_DIR}/whiteboxing.cc"
                       "${CMAKE_CURRENT_SOURCE_DIR}/tree.cc")
 target_link_libraries(chlore ${OSL_LIBRARY})
 target_link_libraries(chlore ${CLAY_LIBRARY})
+
+add_executable(beta_uncover "${CMAKE_CURRENT_SOURCE_DIR}/beta_uncover.cc")
+target_link_libraries(beta_uncover ${OSL_LIBRARY})
+target_link_libraries(beta_uncover ${CLAY_LIBRARY})
+target_link_libraries(beta_uncover ${CLOOG_ISL_LIBRARY})

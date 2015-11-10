@@ -1,0 +1,219 @@
+#define CLOOG_INT_LONG_LONG
+#include <cloog/int.h>
+#include <cloog/cloog.h>
+
+#include <osl/osl.h>
+
+#include <clay/array.h>
+#include <clay/relation.h>
+#include <clay/util.h>
+
+#include <cassert>
+#include <cstdio>
+#include <iostream>
+#include <map>
+#include <vector>
+#include <utility>
+
+#include "osl_wrapper.h"
+
+char *clay_array_string(clay_array_p array) {
+  size_t length = 3 + array->size * sizeof(int) * 4;
+  char *string = (char *) malloc(length);
+  char *start = string;
+  int i;
+  char buffer[sizeof(int) * 3 + 1];
+  int watermark = length;
+
+  snprintf(string, watermark, "[");
+  string += 1;
+  watermark -= 1;
+
+  for (i = 0; i < array->size - 1; i++) {
+    int current_length;
+    snprintf(buffer, sizeof(int) * 3 + 1, "%d", array->data[i]);
+    snprintf(string, watermark, "%s,", buffer);
+    current_length = strlen(buffer);
+    string += current_length + 1;
+    watermark -= current_length + 1;
+  }
+  if (array->size != 0) {
+    int current_length;
+    snprintf(buffer, sizeof(int) * 3 + 1, "%d", array->data[array->size - 1]);
+    snprintf(string, watermark, "%s", buffer);
+    current_length = strlen(buffer);
+    string += current_length;
+    watermark -= current_length;
+  }
+  snprintf(string, watermark, "]");
+
+  return start;
+}
+
+int maximum_depth(CloogLoop *loop, int start = 0) {
+  if (loop == NULL)
+    return start;
+  int result = start;
+  for (CloogLoop *l = loop->inner; l != NULL; l = l->next) {
+    int current = maximum_depth(l, start + 1);
+    if (current > result)
+      result = current;
+  }
+  return result;
+}
+
+void uncover_betas(CloogLoop *loop, std::map<int, ClayArray> &mapping, clay_array_p prefix, int depth = 0) {
+  if (loop == NULL)
+    return;
+
+  if ((depth % 2) == 1 && !loop->block) {
+//    assert(loop->inner != NULL && loop->inner->next == NULL);
+//    uncover_betas(loop->inner, mapping, prefix, depth + 1);
+  }
+
+  if (loop->block) {
+    int index = 0;
+    for (CloogStatement *stmt = loop->block->statement; stmt != NULL; stmt = stmt->next, ++index) {
+      clay_array_p beta = clay_array_clone(prefix);
+      clay_array_add(beta, index);
+      mapping.emplace(std::make_pair(stmt->number, ClayArray(beta)));
+    }
+    return;
+  }
+
+  int index = 0;
+  for (CloogLoop *inner = loop->inner; inner != NULL; inner = inner->next, ++index) {
+    clay_array_p child_prefix = clay_array_clone(prefix);
+    clay_array_add(child_prefix, index);
+    uncover_betas(inner, mapping, child_prefix, depth + 1);
+    clay_array_free(child_prefix);
+  }
+}
+
+void postprocess_mapping(std::map<int, ClayArray> &mapping, int extra_dims) {
+  for (auto &it : mapping) {
+    clay_array_p beta = static_cast<clay_array_p>(it.second);
+    int initial_size = beta->size;
+    beta->size -= extra_dims + 1;
+    int updated = beta->data[initial_size - 1] + beta->data[beta->size - 1];
+
+    for (auto &it2 : mapping) {
+      clay_array_p current = static_cast<clay_array_p>(it2.second);
+      if (current->size >= beta->size &&
+          current->data[beta->size - 1] >= updated) {
+        current->data[beta->size - 1] += beta->data[initial_size- 1];
+      }
+    }
+
+    beta->data[beta->size - 1] = updated;
+  }
+}
+
+std::vector<std::pair<int, int>> scalar_dimensions(osl_relation_p relation) {
+  std::vector<std::pair<int, int>> dimensions;
+  for (int i = 0; i < relation->nb_rows; i++) {
+    if (clay_util_is_row_beta_definition(relation, i)) {
+      int dim = -1;
+      for (int j = 0; j < relation->nb_output_dims; j++) {
+        if (osl_int_mone(relation->precision, relation->m[i][1 + j])) {
+          dim = j;
+          break;
+        }
+      }
+      assert(dim != -1);
+      // TODO: check it does not appear in any other lines
+      dimensions.push_back(std::make_pair(dim, i));
+    }
+  }
+  return dimensions;
+}
+
+void replace_beta(osl_relation_p relation, clay_array_p beta) {
+  std::vector<std::pair<int, int>> scalar_dims = scalar_dimensions(relation);
+
+  for (int i = 0; i < beta->size; i++) {
+    int current_dimension = 2 * i;
+
+    if (scalar_dims.size() != 0) {
+      assert(scalar_dims.front().first >= current_dimension);
+      assert(scalar_dims.front().first % 2 == 0);
+    }
+
+    if (scalar_dims.size() != 0 &&
+        scalar_dims.front().first == current_dimension) {
+      int row = scalar_dims.front().second;
+      osl_int_set_si(relation->precision,
+                     &relation->m[row][relation->nb_columns - 1],
+                     beta->data[i]);
+      scalar_dims.erase(scalar_dims.begin());
+    } else {
+      osl_relation_insert_blank_row(relation, 0);
+      osl_relation_insert_blank_column(relation, 1 + current_dimension);
+      relation->nb_output_dims += 1;
+      osl_int_set_si(relation->precision,
+                     &relation->m[0][1 + current_dimension],
+                     -1);
+      osl_int_set_si(relation->precision,
+                     &relation->m[0][relation->nb_columns - 1],
+                     beta->data[i]);
+      for (size_t j = 0; j < scalar_dims.size(); j++) {
+        scalar_dims[j].first += 1;
+      }
+    }
+  }
+}
+
+void reintroduce_betas(osl_scop_p scop) {
+  CloogState *cloog_state = cloog_state_malloc();
+  CloogOptions *cloog_options = cloog_options_malloc(cloog_state);
+  cloog_options->f = -1;
+  cloog_options->openscop = 1;
+
+  CloogInput *cloog_input = cloog_input_from_osl_scop(cloog_state, scop);
+  CloogProgram *cloog_program = cloog_program_alloc(cloog_input->context, cloog_input->ud, cloog_options);
+
+  cloog_program_generate(cloog_program, cloog_options);
+
+  std::map<int, ClayArray> mapping;
+  uncover_betas(cloog_program->loop, mapping, ClayArray());
+  int extra_dims = (maximum_depth(cloog_program->loop) - 1) / 2;
+  postprocess_mapping(mapping, extra_dims);
+
+  // TODO: remove unions to find betas for all scatterings, than recreate unions.
+  osl_statement_p stmt = scop->statement;
+  for (auto it : mapping) {
+    assert(stmt != NULL);
+    replace_beta(stmt->scattering, it.second);
+    stmt = stmt->next;
+  }
+
+  cloog_program_free(cloog_program);
+  cloog_options_free(cloog_options);
+  cloog_state_free(cloog_state);
+}
+
+int main(int argc, char **argv) {
+  if (argc != 2) {
+    if (argc == 1) {
+      std::cerr << "Usage " << argv[0] << " <filename.scop>" << std::endl;
+    } else {
+      std::cerr << "Usage ./beta_uncover <filename.scop>" << std::endl;
+    }
+    return 1;
+  }
+
+  FILE *f = fopen(argv[1], "r");
+  if (!f)
+    return 2;
+  osl_scop_p scop = osl_scop_read(f);
+  fclose(f);
+  if (!scop)
+    return 3;
+  reintroduce_betas(scop);
+
+  osl_scop_print(stdout, scop);
+  osl_scop_free(scop);
+
+  return 0;
+}
+
