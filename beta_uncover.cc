@@ -111,32 +111,84 @@ void postprocess_mapping(std::map<int, ClayArray> &mapping, int extra_dims) {
 
 std::vector<std::pair<int, int>> scalar_dimensions(osl_relation_p relation) {
   std::vector<std::pair<int, int>> dimensions;
+
   for (int i = 0; i < relation->nb_rows; i++) {
-    if (clay_util_is_row_beta_definition(relation, i)) {
-      int dim = -1;
-      for (int j = 0; j < relation->nb_output_dims; j++) {
-        if (osl_int_mone(relation->precision, relation->m[i][1 + j])) {
+    int dim = -1;
+    bool scalar = true;
+    if (!osl_int_zero(relation->precision,
+                      relation->m[i][0])) {
+      scalar = false;
+    }
+    for (int j = 0; j < relation->nb_output_dims; j++) {
+      if (dim == -1) {
+        if (osl_int_mone(relation->precision,
+                         relation->m[i][1 + j])) {
           dim = j;
+          continue;
+        }
+      } else {
+        if (!osl_int_zero(relation->precision,
+                          relation->m[i][1 + j])) {
+          scalar = false;
           break;
         }
       }
+    }
+    for (int j = relation->nb_output_dims + 1; j < relation->nb_columns - 1; j++) {
+      if (!osl_int_zero(relation->precision,
+                        relation->m[i][j])) {
+        scalar = false;
+        break;
+      }
+    }
+
+    // Check if this dimension does not appear in other (in)equalities.
+    for (int j = 0; j < relation->nb_rows; j++) {
+      if (i != j) {
+        if (!osl_int_zero(relation->precision,
+                          relation->m[j][1 + dim])) {
+          scalar = false;
+        }
+      }
+    }
+
+
+    if (scalar) {
       assert(dim != -1);
-      // TODO: check it does not appear in any other lines
       dimensions.push_back(std::make_pair(dim, i));
     }
   }
+
   return dimensions;
+}
+
+void remove_adjacent_scalar_dimension(osl_relation_p relation,
+                                      std::vector<std::pair<int, int>> &scalar_dims) {
+  // Go in inverse direction to prevent row/column reindexing after deletion
+  for (size_t i = 0; i < scalar_dims.size() - 1; i++) {
+    size_t idx = scalar_dims.size() - i - 2;
+    if (scalar_dims[idx].first == scalar_dims[idx + 1].first - 1) {
+      osl_relation_remove_row(relation, scalar_dims[idx + 1].second);
+      osl_relation_remove_column(relation, scalar_dims[idx + 1].first + 1);
+      relation->nb_output_dims -= 1;
+      scalar_dims.erase(scalar_dims.begin() + idx + 1);
+      --i;
+    }
+  }
 }
 
 void replace_beta(osl_relation_p relation, clay_array_p beta) {
   std::vector<std::pair<int, int>> scalar_dims = scalar_dimensions(relation);
+
+  // Keep only first of adjacent scalar dimensions (pluto may add multiple,
+  // but they are trivially linearizable using their lexicographic order).
+  remove_adjacent_scalar_dimension(relation, scalar_dims);
 
   for (int i = 0; i < beta->size; i++) {
     int current_dimension = 2 * i;
 
     if (scalar_dims.size() != 0) {
       assert(scalar_dims.front().first >= current_dimension);
-      assert(scalar_dims.front().first % 2 == 0);
     }
 
     if (scalar_dims.size() != 0 &&
@@ -158,6 +210,7 @@ void replace_beta(osl_relation_p relation, clay_array_p beta) {
                      beta->data[i]);
       for (size_t j = 0; j < scalar_dims.size(); j++) {
         scalar_dims[j].first += 1;
+        scalar_dims[j].second += 1;
       }
     }
   }
