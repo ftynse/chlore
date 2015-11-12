@@ -1355,7 +1355,7 @@ chlore_skewed(osl_relation_p scattering) {
     for (int j = i + 1; j < scattering->nb_input_dims; j++) {
       int source_row = 2*i + 1;
       int target_row = 2*j + 1;
-      int source_column = 1 + scattering->nb_output_dims;
+      int source_column = 1 + scattering->nb_output_dims + i;
 
       // no need for skewing away this value
       if (osl_int_zero(scattering->precision,
