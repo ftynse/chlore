@@ -721,7 +721,6 @@ void chlore_put_statement_after(osl_scop_p scop, int location, clay_array_p beta
   }
 
   for (int i = 0; i <= last_statement_beta_dim; i++) {
-    clay_array_add(reorder_list, i);
     if (i > statement_beta_dim && i <= location) {
       reorder_list->data[i] = i - 1;
     } else if (i == statement_beta_dim) {
@@ -745,6 +744,7 @@ void chlore_put_statement_after(osl_scop_p scop, int location, clay_array_p beta
 
 clay_array_p chlore_detach_statement_from_loop(osl_scop_p scop, clay_array_p beta,
                                                std::vector<ChloreBetaTransformation> &commands, clay_options_p options) {
+  assert(beta->size > 1);
   clay_array_p current_beta = clay_array_clone(beta);
   int statement_beta_dim = current_beta->data[current_beta->size - 1];
   int last_statement_beta_dim;
@@ -752,11 +752,14 @@ clay_array_p chlore_detach_statement_from_loop(osl_scop_p scop, clay_array_p bet
   last_statement_beta_dim = chlore_last_statement_beta_dim(scop, current_beta);
   current_beta->size += 1;
 
-  // already last, no need to do anything
+  // already last, no need to reorder.
   if (statement_beta_dim != last_statement_beta_dim) {
     // put last
     chlore_put_statement_last(scop, last_statement_beta_dim, current_beta, commands, options);
+  }
 
+  // If the only statement, no need to perform an actual split.
+  if (last_statement_beta_dim != 0) {
     current_beta->data[current_beta->size - 1] = last_statement_beta_dim - 1;
     ChloreBetaTransformation splitting;
     splitting.kind = ChloreBetaTransformation::SPLIT;
@@ -777,6 +780,7 @@ clay_array_p chlore_detach_statement_from_loop(osl_scop_p scop, clay_array_p bet
 
 clay_array_p chlore_detach_statement_until_depth(osl_scop_p scop, clay_array_p beta, int depth,
                                                  std::vector<ChloreBetaTransformation> &commands, clay_options_p options) {
+  assert(depth > 0);
   clay_array_p current_beta = clay_array_clone(beta);
   while (current_beta->size > depth) {
     clay_array_p old_pointer = current_beta;
@@ -1735,18 +1739,20 @@ void chlore_fix_beta_at_dept2(osl_scop_p original, osl_scop_p transformed,
     original_beta = static_cast<std::pair<ClayArray, ClayArray> &>(mismatch).first;
     transformed_beta = static_cast<std::pair<ClayArray, ClayArray> &>(mismatch).second;
 
-    clay_array_p split_beta = chlore_detach_statement_until_depth(original, original_beta, prefix->size, commands, options);
+    clay_array_p split_beta = chlore_detach_statement_until_depth(original, original_beta, prefix->size + 1, commands, options);
 
     int last_original_child_beta = chlore_last_statement_beta_dim(original, prefix);
     int last_transformed_child_beta = chlore_last_statement_beta_dim(transformed, prefix);
 
     // Reorder after the target position and fuse (something already has the required beta-prefix;
     // if it is not used after, it will be split away).
+    assert(split_beta->size != 0);
+    assert(split_beta->size > prefix->size);
     if (last_transformed_child_beta != split_beta->data[prefix->size]) {
       assert(transformed_beta->data[prefix->size] <= last_original_child_beta); // if not, just put the statement last in the loop...
       if (split_beta->data[prefix->size] != transformed_beta->data[prefix->size] + 1) { // Do not reorder if already there
         int old_size = split_beta->size;
-        split_beta->size = prefix->size + 1; //  find_first_mismatch returns only beta-vectors for which prefix is shorter than the vector, this is safe
+        split_beta->size = prefix->size + 1; // find_first_mismatch returns only beta-vectors for which prefix is shorter than the vector, this is safe + assertion above
         chlore_put_statement_after(original, transformed_beta->data[prefix->size], split_beta, commands, options);
         split_beta->size = old_size;
       }
@@ -1775,16 +1781,18 @@ void chlore_fix_beta_at_dept2(osl_scop_p original, osl_scop_p transformed,
     }
     clay_array_free(split_beta);
 
-    // beta-vectors might have changed, so we must restart the inner loop
-  }
 
-  // Split away everything that has prefix in original, but not in transformed.
-  while (true) {
-    clay_array_p split_away_beta = chlore_find_first_split_away(original, transformed, prefix);
-    if (!split_away_beta) {
-      break;
+    // Split away everything that has prefix in original, but not in transformed.
+    // If this is done outside the main loop, it may lead to mutually undoing reorders on two loops.
+    while (true) {
+      clay_array_p split_away_beta = chlore_find_first_split_away(original, transformed, prefix);
+      if (!split_away_beta) {
+        break;
+      }
+      chlore_detach_statement_until_depth(original, split_away_beta, prefix->size + 1, commands, options);
+      clay_array_free(split_away_beta);
     }
-    chlore_detach_statement_until_depth(original, split_away_beta, prefix->size, commands, options);
+    // beta-vectors might have changed, so we must restart the inner loop
   }
 }
 
