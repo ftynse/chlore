@@ -700,6 +700,30 @@ void chlore_put_statement_first(osl_scop_p scop, clay_array_p beta,
 
 }
 
+static void chlore_reordering_list(int statement_beta_dim, clay_array_p reorder_list, int location, int last_statement_beta_dim) {
+  if (statement_beta_dim > location) {
+    for (int i = 0; i <= last_statement_beta_dim; i++) {
+      if (i > location && i < statement_beta_dim) {
+        reorder_list->data[i] = i + 1;
+      } else if (i == statement_beta_dim) {
+        reorder_list->data[i] = location + 1;
+      } else {
+        reorder_list->data[i] = i;
+      }
+    }
+  } else {
+    for (int i = 0; i <= last_statement_beta_dim; i++) {
+      if (i > statement_beta_dim && i <= location) {
+        reorder_list->data[i] = i - 1;
+      } else if (i == statement_beta_dim) {
+        reorder_list->data[i] = location;
+      } else {
+        reorder_list->data[i] = i;
+      }
+    }
+  }
+}
+
 void chlore_put_statement_after(osl_scop_p scop, int location, clay_array_p beta,
                                 std::vector<ChloreBetaTransformation> &commands, clay_options_p options) {
   int statement_beta_dim = beta->data[beta->size - 1];
@@ -707,28 +731,12 @@ void chlore_put_statement_after(osl_scop_p scop, int location, clay_array_p beta
   int last_statement_beta_dim = chlore_last_statement_beta_dim(scop, beta);
   beta->size += 1;
 
-  if (statement_beta_dim > location) {
-    clay_array_p new_beta = clay_array_clone(beta);
-    std::swap(new_beta->data[new_beta->size - 1], location);
-    chlore_put_statement_after(scop, location, new_beta, commands, options);
-    clay_array_free(new_beta);
-    return;
-  }
-
   clay_array_p reorder_list = clay_array_malloc();
   for (int i = 0; i <= last_statement_beta_dim; i++) {
     clay_array_add(reorder_list, 0);
   }
 
-  for (int i = 0; i <= last_statement_beta_dim; i++) {
-    if (i > statement_beta_dim && i <= location) {
-      reorder_list->data[i] = i - 1;
-    } else if (i == statement_beta_dim) {
-      reorder_list->data[i] = location;
-    } else {
-      reorder_list->data[i] = i;
-    }
-  }
+  chlore_reordering_list(statement_beta_dim, reorder_list, location, last_statement_beta_dim);
 
   ChloreBetaTransformation transformation;
   beta->size -= 1;
@@ -1607,6 +1615,9 @@ static optional<std::pair<ClayArray, ClayArray>> chlore_find_first_beta_mismatch
     ++nb_stmts;
   }
 
+  clay_array_p candidate_original_beta = NULL;
+  clay_array_p candidate_transformed_beta = NULL;
+
   for (int i = 0; i < nb_stmts; i++) {
     int nb_scatterings = 0;
     for (osl_relation_p r = original_stmt->scattering; r != NULL; r = r->next)
@@ -1629,7 +1640,19 @@ static optional<std::pair<ClayArray, ClayArray>> chlore_find_first_beta_mismatch
         }
         for (int k = 0; k < prefix->size + 1; k++) {
           if (transformed_beta->data[k] != original_beta->data[k]) {
-            return make_optional(std::make_pair(ClayArray(original_beta), ClayArray(transformed_beta)));
+            if (candidate_original_beta) {
+              int unused;
+              if (clay_beta_compare(transformed_beta, candidate_transformed_beta, &unused) > 0) {
+                clay_array_free(candidate_original_beta);
+                clay_array_free(candidate_transformed_beta);
+                candidate_original_beta = original_beta;
+                candidate_transformed_beta = transformed_beta;
+              }
+            } else {
+              candidate_original_beta = original_beta;
+              candidate_transformed_beta = transformed_beta;
+            }
+//            return make_optional(std::make_pair(ClayArray(original_beta), ClayArray(transformed_beta)));
           }
         }
         // Full prefix match, location is already correct at this depth
@@ -1643,7 +1666,12 @@ static optional<std::pair<ClayArray, ClayArray>> chlore_find_first_beta_mismatch
     transformed_stmt = transformed_stmt->next;
   }
 
-  return make_empty<std::pair<ClayArray, ClayArray>>();
+  if (candidate_original_beta) {
+    return make_optional(std::make_pair(ClayArray(candidate_original_beta),
+                                        ClayArray(candidate_transformed_beta)));
+  } else {
+    return make_empty<std::pair<ClayArray, ClayArray>>();
+  }
 }
 
 static clay_array_p chlore_find_first_split_away(
@@ -1667,6 +1695,10 @@ static clay_array_p chlore_find_first_split_away(
 
       if (clay_beta_check_relation(original_rel, prefix)) {
         if (!clay_beta_check_relation(transformed_rel, prefix)) {
+          fprintf(stderr, "? %d %d ", i, j);
+          clay_array_print(stderr, prefix, 0);
+          clay_array_print(stderr, clay_beta_extract(original_rel), 0);
+          clay_array_print(stderr, clay_beta_extract(transformed_rel), 1);
           return clay_beta_extract(original_rel);
         }
       }
@@ -1682,48 +1714,45 @@ static clay_array_p chlore_find_first_split_away(
   return NULL;
 }
 
-void chlore_fix_beta_at_depth(osl_scop_p original, osl_scop_p transformed,
-                              std::vector<ChloreBetaTransformation> &commands, clay_options_p options,
-                              clay_array_p child_prefix, clay_array_p prefix) {
-  while (true) {
-    clay_array_p original_beta;
-    optional<std::pair<ClayArray, ClayArray>> mismatch = chlore_find_first_beta_mismatch(original, transformed, child_prefix);
-    if (!mismatch) {
-      break;
-    }
-    std::tie(original_beta, std::ignore) = static_cast<std::pair<ClayArray, ClayArray>>(mismatch);
+static bool chlore_has_match_at_prefix(
+    osl_scop_p original, osl_scop_p transformed, clay_array_p prefix, clay_array_p transfomed_prefix, clay_array_p active_beta) {
+  osl_statement_p original_stmt = original->statement;
+  osl_statement_p transformed_stmt = transformed->statement;
 
-    chlore_detach_statement_until_depth(original, original_beta, child_prefix->size, commands, options); // TODO check depth is correct or needs -1
-
-    int nb_original_children = chlore_last_statement_beta_dim(original, prefix);
-    assert (nb_original_children >= original_beta->data[prefix->size]);
-    if (nb_original_children != original_beta->data[prefix->size]) {
-      int old_size = original_beta->size;
-      original_beta->size = child_prefix->size;
-      chlore_put_statement_after(original, child_prefix->data[child_prefix->size - 1], original_beta, commands, options);
-      original_beta->size = old_size;
-
-      // TODO: is fusion always necessary?
-      ChloreBetaTransformation fusion;
-      fusion.kind = ChloreBetaTransformation::FUSE;
-      fusion.target = ClayArray::copy(child_prefix);
-      // no need to compute undo statements here
-      //        fusion.first_loop_size = chlore_last_statement_beta_dim(scop, child_prefix);
-      commands.push_back(fusion);
-      clay_fuse(original, child_prefix, options);
-    }
-
-    // beta-vectors might have changed, so we must restart the inner loop
+  int nb_stmts = 0;
+  for (osl_statement_p s = original->statement; s != NULL; s = s->next) {
+    ++nb_stmts;
   }
 
-  // Split away everything that has child_prefix in original, but not in transformed.
-  while (true) {
-    clay_array_p split_away_beta = chlore_find_first_split_away(original, transformed, child_prefix);
-    if (!split_away_beta) {
-      break;
+  for (int i = 0; i < nb_stmts; i++) {
+    int nb_scatterings = 0;
+    for (osl_relation_p r = original_stmt->scattering; r != NULL; r = r->next)
+      ++nb_scatterings;
+
+    osl_relation_p original_rel = original_stmt->scattering;
+    osl_relation_p transformed_rel = transformed_stmt->scattering;
+    for (int j = 0; j < nb_scatterings; j++) {
+
+      if (clay_beta_check_relation(original_rel, prefix)) {
+        if (clay_beta_check_relation(transformed_rel, transfomed_prefix)) {
+          int unused;
+          clay_array_p original_beta = clay_beta_extract(original_rel);
+          if (clay_beta_compare(original_beta, active_beta, &unused) != 0) {
+            clay_array_free(original_beta);
+            return true;
+          }
+          clay_array_free(original_beta);
+        }
+      }
+
+      original_rel = original_rel->next;
+      transformed_rel = transformed_rel->next;
     }
-    chlore_detach_statement_until_depth(original, split_away_beta, child_prefix->size, commands, options); // TODO: check depth is correct or needs -1
+
+    original_stmt = original_stmt->next;
+    transformed_stmt = transformed_stmt->next;
   }
+  return false;
 }
 
 void chlore_fix_beta_at_dept2(osl_scop_p original, osl_scop_p transformed,
@@ -1742,57 +1771,75 @@ void chlore_fix_beta_at_dept2(osl_scop_p original, osl_scop_p transformed,
     clay_array_p split_beta = chlore_detach_statement_until_depth(original, original_beta, prefix->size + 1, commands, options);
 
     int last_original_child_beta = chlore_last_statement_beta_dim(original, prefix);
-    int last_transformed_child_beta = chlore_last_statement_beta_dim(transformed, prefix);
 
-    // Reorder after the target position and fuse (something already has the required beta-prefix;
-    // if it is not used after, it will be split away).
+    // If there is a statement with the same prefix at position already, fuse with it.
     assert(split_beta->size != 0);
     assert(split_beta->size > prefix->size);
-    if (last_transformed_child_beta != split_beta->data[prefix->size]) {
+
+    clay_array_p fusion_target = clay_array_clone(prefix);
+    clay_array_add(fusion_target, transformed_beta->data[prefix->size]);
+    clay_array_p transformed_fusion_target = clay_array_clone(fusion_target);
+    // If split at the current level happend before fusion target beta, all statements that were in the
+    // old target were offset by +1, for which we have to check.
+    if (split_beta->data[prefix->size] <= fusion_target->data[prefix->size]) {
+      fusion_target->data[prefix->size] += 1;
+    }
+
+    if (chlore_has_match_at_prefix(original, transformed, fusion_target, transformed_fusion_target, split_beta)) {
       assert(transformed_beta->data[prefix->size] <= last_original_child_beta); // if not, just put the statement last in the loop...
-      if (split_beta->data[prefix->size] != transformed_beta->data[prefix->size] + 1) { // Do not reorder if already there
+      if (split_beta->data[prefix->size] != fusion_target->data[prefix->size] + 1) { // Do not reorder if already there
         int old_size = split_beta->size;
         split_beta->size = prefix->size + 1; // find_first_mismatch returns only beta-vectors for which prefix is shorter than the vector, this is safe + assertion above
-        chlore_put_statement_after(original, transformed_beta->data[prefix->size], split_beta, commands, options);
+        chlore_put_statement_after(original, fusion_target->data[prefix->size], split_beta, commands, options);
         split_beta->size = old_size;
       }
 
-      clay_array_p fusion_target = clay_array_clone(prefix);
-      clay_array_add(fusion_target, transformed_beta->data[prefix->size]);
       ChloreBetaTransformation fusion;
       fusion.kind   = ChloreBetaTransformation::FUSE;
-      fusion.target = ClayArray(fusion_target);
+      fusion.target = ClayArray(transformed_fusion_target);
       // no need to compute undo statements here, spare computation.
       // fusion.first_loop_size = chlore_last_statement_beta_dim(scop, fusion_target);
       commands.push_back(fusion);
-      clay_fuse(original, fusion_target, options);
-    } else if (last_transformed_child_beta == split_beta->data[prefix->size]){ // No need to fuse (remainigs will be split away if necessary)
+      clay_fuse(original, transformed_fusion_target, options);
+
+      clay_array_free(split_beta);
+      split_beta = clay_array_clone(transformed_fusion_target);
+    } else {
+    // Otherwise just put at position.
       if (split_beta->data[prefix->size] != transformed_beta->data[prefix->size]) {
         int old_size = split_beta->size;
         split_beta->size = prefix->size + 1;
         if (transformed_beta->data[prefix->size] == 0) {
           chlore_put_statement_first(original, split_beta, commands, options);
         } else {
-          chlore_put_statement_after(original, transformed_beta->data[prefix->size] - 1,
-            split_beta, commands, options);
+          if (transformed_beta->data[prefix->size] < split_beta->data[prefix->size]) {
+            chlore_put_statement_after(original, transformed_beta->data[prefix->size] - 1,
+                split_beta, commands, options);
+          } else {
+            chlore_put_statement_after(original, transformed_beta->data[prefix->size],
+                split_beta, commands, options);
+          }
         }
+        split_beta->data[split_beta->size - 1] = transformed_beta->data[prefix->size];
         split_beta->size = old_size;
       }
+      clay_array_free(fusion_target);
     }
-    clay_array_free(split_beta);
-
 
     // Split away everything that has prefix in original, but not in transformed.
     // If this is done outside the main loop, it may lead to mutually undoing reorders on two loops.
     while (true) {
-      clay_array_p split_away_beta = chlore_find_first_split_away(original, transformed, prefix);
+      clay_array_p split_away_beta = chlore_find_first_split_away(original, transformed, split_beta);
       if (!split_away_beta) {
         break;
       }
       chlore_detach_statement_until_depth(original, split_away_beta, prefix->size + 1, commands, options);
       clay_array_free(split_away_beta);
     }
+    clay_array_free(split_beta);
+
     // beta-vectors might have changed, so we must restart the inner loop
+
   }
 }
 
