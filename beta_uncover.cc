@@ -162,9 +162,11 @@ std::vector<std::pair<int, int>> scalar_dimensions(osl_relation_p relation) {
   return dimensions;
 }
 
-void remove_adjacent_scalar_dimension(osl_relation_p relation,
+void remove_adjacent_scalar_dimensions(osl_relation_p relation,
                                       std::vector<std::pair<int, int>> &scalar_dims) {
   // Go in inverse direction to prevent row/column reindexing after deletion
+  if (scalar_dims.size() <= 1)
+    return;
   for (size_t i = 0; i < scalar_dims.size() - 1; i++) {
     size_t idx = scalar_dims.size() - i - 2;
     if (scalar_dims[idx].first == scalar_dims[idx + 1].first - 1) {
@@ -182,7 +184,16 @@ void replace_beta(osl_relation_p relation, clay_array_p beta) {
 
   // Keep only first of adjacent scalar dimensions (pluto may add multiple,
   // but they are trivially linearizable using their lexicographic order).
-  remove_adjacent_scalar_dimension(relation, scalar_dims);
+  remove_adjacent_scalar_dimensions(relation, scalar_dims);
+
+  if (relation->nb_output_dims > beta->size + static_cast<int>(scalar_dims.size()) - 1) {
+    // in case of loop [i]->[2*i,i,i], CLooG does not generate surrounding loops for the inners, add more betas.
+    int extra_betas = relation->nb_output_dims - (beta->size + static_cast<int>(scalar_dims.size()) - 1);
+    fprintf(stderr, "[chlore] adding %d beta values\n", extra_betas);
+    for (int i = 0; i < extra_betas; i++) {
+      clay_array_add(beta, 0);
+    }
+  }
 
   for (int i = 0; i < beta->size; i++) {
     int current_dimension = 2 * i;
@@ -221,6 +232,7 @@ void reintroduce_betas(osl_scop_p scop) {
   CloogOptions *cloog_options = cloog_options_malloc(cloog_state);
   cloog_options->f = -1;
   cloog_options->openscop = 1;
+  cloog_options->otl = 0;
 
   osl_scop_p linear_scop = osl_scop_remove_unions(scop);
 
