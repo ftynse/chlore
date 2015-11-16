@@ -26,6 +26,11 @@
 // chunku loop optimizer reverse engineering
 // ChLORe
 
+int chlore_linearizable_lines_impl(osl_scop_p scop, clay_array_p beta, int depth,
+                                   clay_list_p found_betas, clay_array_p row_indices,
+                                   int pseudo_linearizable);
+int chlore_extract_stripmine_size_impl(osl_scop_p scop, clay_array_p beta, int depth, int pseudo_linearizable);
+
 template <typename T>
 class optional {
 private:
@@ -798,6 +803,73 @@ clay_array_p chlore_detach_statement_until_depth(osl_scop_p scop, clay_array_p b
   return current_beta;
 }
 
+// Returns a beta-prefix for which linearization is possible.
+clay_array_p chlore_linearizing(osl_scop_p scop, osl_statement_p statement,
+                                std::vector<ChloreBetaTransformation> &commands,
+                                clay_options_p options,
+                                clay_list_p found_betas, clay_array_p row_indices,
+                                int pseudo_linearizable) {
+  if (!statement || !statement->scattering)
+    return NULL;
+
+  for (osl_relation_p scat = statement->scattering;
+       scat != NULL; scat = scat->next) {
+    clay_array_p current_beta = clay_beta_extract(scat);
+    int try_separation_at = -1;
+    for (int depth = 1, limit = current_beta->size; depth < limit; depth++) {
+      int r = chlore_linearizable_lines_impl(scop, current_beta, depth, found_betas, row_indices, pseudo_linearizable);
+
+      if (r != CLAY_SUCCESS) {
+        continue;
+      } else {
+        try_separation_at = depth;
+      }
+
+      current_beta->size = depth;
+      if (chlore_extract_stripmine_size_impl(scop, current_beta, depth, pseudo_linearizable) >= 0) {
+        return current_beta;
+      }
+      current_beta->size = limit;
+
+      clay_list_clear(found_betas);
+      clay_array_clear(row_indices);
+    }
+
+    osl_scop_p clone = osl_scop_clone(scop);
+    clay_array_p initial_beta = clay_array_clone(current_beta);
+    std::vector<ChloreBetaTransformation> unused_commands;
+    for (int d = try_separation_at - 1; d >= 1; --d) {
+      clay_array_p detached_beta = chlore_detach_statement_until_depth(clone, current_beta, d, unused_commands, options);
+      clay_array_free(current_beta);
+      current_beta = detached_beta;
+      for (int depth = d; depth < initial_beta->size; depth++) {
+        // Grow beta.
+        clay_array_p target_beta = clay_array_clone(current_beta);
+        ClayArray raiitarget_beta(target_beta);
+        for (int j = current_beta->size; j < initial_beta->size; j++) {
+          clay_array_add(target_beta, 0);
+        }
+        if (chlore_extract_stripmine_size_impl(clone, target_beta, depth, pseudo_linearizable) >= 0) {
+          // If it worked, perform it on the real scop
+          clay_array_free(detached_beta);
+          current_beta = chlore_detach_statement_until_depth(scop, initial_beta, d, commands, options);
+          for (int j = current_beta->size; j < depth; j++) {
+            clay_array_add(current_beta, 0);
+          }
+          clay_array_free(initial_beta);
+          osl_scop_free(clone);
+          return current_beta;
+        }
+      }
+    }
+    clay_array_free(initial_beta);
+    osl_scop_free(clone);
+    clay_array_free(current_beta);
+  }
+
+  return NULL;
+}
+
 // Returns a beta-prefix for which collapsing is possible.
 clay_array_p chlore_collapsing(osl_scop_p scop, osl_statement_p statement,
                                std::vector<ChloreBetaTransformation> &commands, clay_options_p options,
@@ -884,10 +956,11 @@ clay_array_p chlore_collapsing(osl_scop_p scop, osl_statement_p statement,
   return collapsing_prefix;
 }
 
-
 // FIXME: this is almost a copy of clay_linearize
-int chlore_linearizable_lines(osl_scop_p scop, clay_array_p beta, int depth,
-                              clay_list_p found_betas, clay_array_p row_indices) {
+// (except for pseudo-lines)
+int chlore_linearizable_lines_impl(osl_scop_p scop, clay_array_p beta, int depth,
+                                   clay_list_p found_betas, clay_array_p row_indices,
+                                   int pseudo_linearizable) {
   osl_statement_p statement;
   osl_relation_p scattering;
   int precision;
@@ -910,6 +983,7 @@ int chlore_linearizable_lines(osl_scop_p scop, clay_array_p beta, int depth,
   while (statement != NULL) {
     scattering = statement->scattering;
     while (scattering != NULL) {
+      int is_last_alpha_dim = 0;
       if (!clay_beta_check_relation(scattering, beta)) {
         scattering = scattering->next;
         continue;
@@ -919,9 +993,13 @@ int chlore_linearizable_lines(osl_scop_p scop, clay_array_p beta, int depth,
         nb_output_dims = scattering->nb_output_dims;
       }
       if ((scattering->nb_output_dims - 1) / 2 < depth + 1) { // Check depth.
-        clay_array_free(candidate_rows_lower);
-        clay_array_free(candidate_rows_upper);
-        return CLAY_ERROR_DEPTH_OVERFLOW;
+        if (pseudo_linearizable && !(scattering->nb_output_dims + 1) / 2 < depth + 1) { // allow looking at the last dim for pseudo
+          is_last_alpha_dim = 1;
+        } else {
+          clay_array_free(candidate_rows_lower);
+          clay_array_free(candidate_rows_upper);
+          return CLAY_ERROR_DEPTH_OVERFLOW;
+        }
       }
       clay_array_clear(candidate_rows_lower);
       clay_array_clear(candidate_rows_upper);
@@ -933,12 +1011,14 @@ int chlore_linearizable_lines(osl_scop_p scop, clay_array_p beta, int depth,
         int positive_at_depth = 0;
         int one_at_next = 0;
         int mone_at_next = 0;
+        int zero_at_next = 0;
+        int one_at_current = 0;
         if (osl_int_zero(precision, scattering->m[row][0])) {
           continue;
         }
 
         for (col = 1; col < scattering->nb_columns - 1; col++) {
-          if (col == 2*depth || col == 2*depth + 2) {
+          if (col == 2*depth || (!is_last_alpha_dim && col == 2*depth + 2)) {
             continue;
           } else {
             if (!osl_int_zero(precision, scattering->m[row][col])) {
@@ -952,7 +1032,7 @@ int chlore_linearizable_lines(osl_scop_p scop, clay_array_p beta, int depth,
         }
 
         if (osl_int_zero(precision, scattering->m[row][2*depth]) ||
-            osl_int_zero(precision, scattering->m[row][2*depth + 2])) {
+            (!is_last_alpha_dim && !pseudo_linearizable && osl_int_zero(precision, scattering->m[row][2*depth + 2]))) {
           continue;
         }
 
@@ -964,11 +1044,23 @@ int chlore_linearizable_lines(osl_scop_p scop, clay_array_p beta, int depth,
                                 scattering->m[row][2*depth + 2]);
         mone_at_next      = osl_int_mone(precision,
                                 scattering->m[row][2*depth + 2]);
+        zero_at_next      = is_last_alpha_dim || osl_int_zero(precision,
+                                scattering->m[row][2*depth + 2]); // short-circuit or prevents access out of bounds
+        one_at_current    = osl_int_one(precision,
+                                scattering->m[row][2*depth]);
 
-        if (!positive_at_depth && one_at_next && constant_zero) {
-          clay_array_add(candidate_rows_lower, row);
-        } else if (positive_at_depth && mone_at_next && !constant_zero) {
-          clay_array_add(candidate_rows_upper, row);
+        if (!pseudo_linearizable) {
+          if (!positive_at_depth && one_at_next && constant_zero) {
+            clay_array_add(candidate_rows_lower, row);
+          } else if (positive_at_depth && mone_at_next && (!constant_zero ^ one_at_current)) {
+            clay_array_add(candidate_rows_upper, row);
+          }
+        } else {
+          if (!positive_at_depth && zero_at_next) {
+            clay_array_add(candidate_rows_lower, row);
+          } else if (positive_at_depth && zero_at_next) {
+            clay_array_add(candidate_rows_upper, row);
+          }
         }
       }
 
@@ -1043,16 +1135,16 @@ int chlore_densifiable(osl_scop_p scop, clay_array_p beta, int depth,
   precision = statement->scattering->precision;
   while (statement != NULL) {
     scattering = statement->scattering;
-    while (scattering != NULL) {
+    for ( ; scattering != NULL; scattering = scattering->next) {
       if (!clay_beta_check_relation(scattering, beta)) {
-        scattering = scattering->next;
         continue;
       }
       CLAY_BETA_CHECK_DEPTH(beta, depth, scattering);
 
       factor = clay_relation_gcd(scattering, depth);
-      if (osl_int_zero(precision, factor))
+      if (osl_int_zero(precision, factor)) {
         continue;
+      }
 
       for (row = 0; row < scattering->nb_rows; row++) {
         if (osl_int_zero(precision, scattering->m[row][depth * 2])) {
@@ -1071,7 +1163,6 @@ int chlore_densifiable(osl_scop_p scop, clay_array_p beta, int depth,
           clay_array_add(grains, osl_int_get_si(precision, factor));
         }
       }
-      scattering = scattering->next;
     }
     statement = statement->next;
   }
@@ -1176,7 +1267,8 @@ clay_list_p chlore_extract_iss_line(osl_scop_p scop, clay_list_p found_betas, cl
   return result;
 }
 
-int chlore_extract_stripmine_size(osl_scop_p scop, clay_array_p beta, int depth) {
+int chlore_extract_stripmine_size_impl(osl_scop_p scop, clay_array_p beta, int depth,
+                                       int pseudo_linearizable) {
   clay_list_p found_betas = clay_list_malloc();
   clay_array_p row_indices = clay_array_malloc();
   osl_statement_p statement;
@@ -1186,7 +1278,7 @@ int chlore_extract_stripmine_size(osl_scop_p scop, clay_array_p beta, int depth)
   int size;
   int precision;
 
-  if (chlore_linearizable_lines(scop, beta, depth, found_betas, row_indices) !=
+  if (chlore_linearizable_lines_impl(scop, beta, depth, found_betas, row_indices, pseudo_linearizable) !=
         CLAY_SUCCESS) {
     clay_list_free(found_betas);
     clay_array_free(row_indices);
@@ -1214,7 +1306,7 @@ int chlore_extract_stripmine_size(osl_scop_p scop, clay_array_p beta, int depth)
       clay_list_free(found_betas);
       clay_array_free(row_indices);
       osl_int_clear(scattering->precision, &factor);
-      return -2;
+      return -3;
     }
   }
 
@@ -1224,6 +1316,14 @@ int chlore_extract_stripmine_size(osl_scop_p scop, clay_array_p beta, int depth)
   clay_list_free(found_betas);
   clay_array_free(row_indices);
   return size;
+}
+
+int chlore_extract_stripmine_size(osl_scop_p scop, clay_array_p beta, int depth) {
+  return chlore_extract_stripmine_size_impl(scop, beta, depth, 0);
+}
+
+int chlore_extract_pseudo_stripmine_constant(osl_scop_p scop, clay_array_p beta, int depth) {
+  return chlore_extract_stripmine_size_impl(scop, beta, depth, 1);
 }
 
 int chlore_extract_grain(osl_scop_p scop, clay_array_p beta, int depth) {
@@ -1305,6 +1405,23 @@ lookup_iss_conditions(osl_scop_p scop, osl_statement_p statement,
   }
 }
 
+optional<std::tuple<ClayArray, int, int>>
+lookup_pseudo_stripmine_constants2(osl_scop_p scop, osl_statement_p statement,
+                                  std::vector<ChloreBetaTransformation> &commands,
+                                  clay_options_p options) {
+  clay_list_p found_betas = clay_list_malloc();
+  clay_array_p row_indices = clay_array_malloc();
+
+  clay_array_p beta = chlore_linearizing(scop, statement, commands, options, found_betas, row_indices, 1);
+  if (beta) {
+    int size = chlore_extract_stripmine_size_impl(scop, beta, beta->size, 1);
+    assert(size >= 0);
+    return make_optional(std::make_tuple(ClayArray(beta), beta->size, size));
+  } else {
+    return make_empty<std::tuple<ClayArray, int, int>>();
+  }
+}
+
 std::vector<std::tuple<ClayArray, int, int>>
 chlore_lookup_aii(osl_scop_p scop, osl_statement_p statement, bool loop_only,
                   int (*extractor)(osl_scop_p, clay_array_p, int)) {
@@ -1325,7 +1442,7 @@ chlore_lookup_aii(osl_scop_p scop, osl_statement_p statement, bool loop_only,
       }
 
       int partial_result = extractor(scop, beta, depth);
-      if (partial_result > 0) {
+      if (partial_result >= 0) {
         result.push_back(std::make_tuple(ClayArray(clay_array_clone(beta)),
                                          depth, partial_result));
       }
@@ -1360,7 +1477,7 @@ chlore_skewed(osl_relation_p scattering) {
   }
 
   // expects the relation to have enough rows for all input dimensions (validity)
-  assert(nb_rows == scattering->nb_input_dims * 2 + 1);
+  assert(nb_rows >= scattering->nb_input_dims * 2 + 1);
 
   // beta-definition rows interleave alpha-definition rows
   for (int i = 0; i < scattering->nb_input_dims; i++) {
@@ -1422,43 +1539,296 @@ chlore_skewed(osl_relation_p scattering) {
   return std::make_tuple(ClayArray(), TRANSFORMATION_NOT_FOUND, -1, 0, 0);
 }
 
+template <typename T, typename Comparator>
+bool is_unique(const std::vector<T> &vector, Comparator comp) {
+  for (size_t i = 0, ei = vector.size(); i < ei; ++i) {
+    for (size_t j = i + 1; j < ei; j++) {
+      if (comp(vector[i], vector[j])) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+bool
+chlore_explicit_dimensions_independent(osl_relation_p scattering,
+                                       const std::vector<std::tuple<int, int, int>> &candidate_explicit_dimensions) {
+  // Create a submatrix of input dimensions, check if has full rank.
+  osl_relation_p submatrix = osl_relation_malloc(candidate_explicit_dimensions.size(),
+                                                 scattering->nb_input_dims + 2);
+
+  for (size_t i = 0; i < candidate_explicit_dimensions.size(); i++) {
+    int row = std::get<1>(candidate_explicit_dimensions[i]);
+    for (int j = 0; j < scattering->nb_input_dims; j++) {
+      osl_int_assign(scattering->precision,
+                     &submatrix->m[i][j],
+                     scattering->m[row][1 + scattering->nb_output_dims + j]);
+    }
+  }
+
+  // Sort rows to have non-zero main diagonal.
+  for (size_t i = 0; i < std::min(candidate_explicit_dimensions.size(), (size_t)scattering->nb_input_dims); i++) {
+    if (!osl_int_zero(submatrix->precision, submatrix->m[i][i]))
+      continue;
+    size_t row = candidate_explicit_dimensions.size();
+    for (size_t j = 0; j < candidate_explicit_dimensions.size(); j++) {
+      if (!osl_int_zero(submatrix->precision, submatrix->m[j][i])) {
+        row = j;
+        break;
+      }
+    }
+    if (row == candidate_explicit_dimensions.size()) {
+      continue;
+    }
+    for (int j = 0; j < scattering->nb_input_dims; j++) {
+      osl_int_swap(submatrix->precision,
+                   &submatrix->m[i][j], &submatrix->m[row][j]);
+    }
+  }
+
+  // Perform Gauss elimination.
+  osl_int_t i_multiplier;
+  osl_int_t j_multiplier;
+  osl_int_t value;
+  osl_int_t factor;
+  osl_int_init(submatrix->precision, &i_multiplier);
+  osl_int_init(submatrix->precision, &j_multiplier);
+  osl_int_init(submatrix->precision, &value);
+  osl_int_init(submatrix->precision, &factor);
+  for (int i = 0; i < scattering->nb_input_dims; i++) {
+    for (size_t j = i + 1; j< candidate_explicit_dimensions.size(); j++) {
+      if (osl_int_zero(submatrix->precision, submatrix->m[j][i]))
+        continue;
+      osl_int_lcm(submatrix->precision,
+                  &factor,
+                  submatrix->m[i][i],
+                  submatrix->m[j][i]);
+
+      if (osl_int_zero(submatrix->precision, factor))
+        continue;
+
+      osl_int_div_exact(submatrix->precision, &i_multiplier, factor, submatrix->m[i][i]);
+      osl_int_div_exact(submatrix->precision, &j_multiplier, factor, submatrix->m[j][i]);
+      for (int k = 0; k < scattering->nb_input_dims; k++) {
+        osl_int_mul(submatrix->precision, &value, submatrix->m[i][k], i_multiplier);
+        osl_int_mul(submatrix->precision, &submatrix->m[j][k], submatrix->m[j][k], j_multiplier);
+        osl_int_sub(submatrix->precision, &submatrix->m[j][k], submatrix->m[j][k], value);
+      }
+
+    }
+  }
+  osl_int_clear(submatrix->precision, &i_multiplier);
+  osl_int_clear(submatrix->precision, &j_multiplier);
+  osl_int_clear(submatrix->precision, &value);
+  osl_int_clear(submatrix->precision, &factor);
+
+
+  // If there is one zero line, then linearly dependent.
+  int all_zero_lines = 0;
+  for (size_t i = 0; i < candidate_explicit_dimensions.size(); i++) {
+    bool all_zeros = true;
+    for (int j = 0; j < scattering->nb_input_dims; j++) {
+      if (!osl_int_zero(submatrix->precision, submatrix->m[i][j])) {
+        all_zeros = false;
+        break;
+      }
+    }
+    if (all_zeros) {
+      ++all_zero_lines;
+    }
+  }
+
+  osl_relation_free(submatrix);
+  return all_zero_lines == 0;
+}
+
+std::pair<std::vector<std::tuple<int, int, int>>,
+          std::vector<std::tuple<int, int, int>>>
+chlore_dimension_definitions(osl_relation_p scattering) {
+  clay_array_p beta = clay_beta_extract(scattering);
+  ClayArray raiibeta(beta);
+
+  std::vector<std::tuple<int, int, int>> candidate_explicit_dimensions;
+  std::vector<std::tuple<int, int, int>> candidate_implicit_dimensions;
+  for (int depth = 0; depth < beta->size - 1; depth++) {
+    int row = clay_util_relation_get_line(scattering, 2*depth + 1);
+    bool is_explicit = false;
+    if (osl_int_zero(scattering->precision, scattering->m[row][0])) { // explicit definition found
+      // Check this definition is not linearly dependent with other explicit definitions.
+      candidate_explicit_dimensions.push_back(std::make_tuple(depth, row, -1));
+      is_explicit = chlore_explicit_dimensions_independent(scattering, candidate_explicit_dimensions);
+      if (!is_explicit) {
+        candidate_explicit_dimensions.erase(--candidate_explicit_dimensions.end());
+      }
+    }
+    if (!is_explicit) {
+      // Look for complementary inequality
+      osl_int_t value;
+      osl_int_init(scattering->precision, &value);
+      osl_int_oppose(scattering->precision, &value, scattering->m[row][2*depth + 2]);
+
+      bool found = false;
+      for (int i = row + 1; i < scattering->nb_rows; i++) {
+        if (osl_int_eq(scattering->precision, value, scattering->m[i][2*depth + 2])) {
+          candidate_implicit_dimensions.push_back(std::make_tuple(depth, row, i));
+          found = true;
+          break;
+        }
+      }
+      osl_int_clear(scattering->precision, &value);
+    }
+  }
+
+#ifndef NDEBUG
+  bool explicit_unique = is_unique(candidate_explicit_dimensions,
+                                   [](const std::tuple<int, int, int> &a,
+                                      const std::tuple<int, int, int> &b) {
+    return std::get<0>(a) == std::get<0>(b);
+  });
+  bool implicit_unique = is_unique(candidate_implicit_dimensions,
+                                   [](const std::tuple<int, int, int> &a,
+                                      const std::tuple<int, int, int> &b) {
+    return std::get<0>(a) == std::get<0>(b);
+  });
+  assert(explicit_unique);
+  assert(implicit_unique);
+#endif
+
+  // Select the dimensions that are only explicitly or implicitly defined.
+  std::vector<std::tuple<int, int, int>> explicit_dimensions;
+  std::set_difference(std::begin(candidate_explicit_dimensions), std::end(candidate_explicit_dimensions),
+                      std::begin(candidate_implicit_dimensions), std::end(candidate_implicit_dimensions),
+                      std::back_inserter(explicit_dimensions),
+                      [] (const std::tuple<int, int, int> &expl, const std::tuple<int, int, int> &impl) -> bool {
+    return std::get<0>(expl) < std::get<0>(impl);
+  });
+  std::vector<std::tuple<int, int, int>> implicit_dimensions;
+  std::set_difference(std::begin(candidate_implicit_dimensions), std::end(candidate_implicit_dimensions),
+                      std::begin(candidate_explicit_dimensions), std::end(candidate_explicit_dimensions),
+                      std::back_inserter(implicit_dimensions),
+                      [] (const std::tuple<int, int, int> &expl, const std::tuple<int, int, int> &impl) -> bool {
+    return std::get<0>(expl) < std::get<0>(impl);
+  });
+
+  std::vector<std::tuple<int, int, int>> undecided_dimensions;
+  std::set_intersection(std::begin(candidate_implicit_dimensions), std::end(candidate_implicit_dimensions),
+                        std::begin(candidate_explicit_dimensions), std::end(candidate_explicit_dimensions),
+                        std::back_inserter(undecided_dimensions),
+                        [] (const std::tuple<int, int, int> &expl, const std::tuple<int, int, int> &impl) -> bool {
+    return std::get<0>(expl) < std::get<0>(impl);
+  });
+//  assert(explicit_dimensions.size() + implicit_dimensions.size() + undecided_dimensions.size() == (size_t) (scattering->nb_output_dims - 1) / 2);
+  assert(explicit_dimensions.size() <= (size_t) scattering->nb_input_dims);
+  assert(undecided_dimensions.size() >= (scattering->nb_input_dims - explicit_dimensions.size()));
+
+  // Choose first doublly-defined dimensions as being explicitly defined
+  // and the rest as implicitly defined.
+  for (int i = explicit_dimensions.size(); i < scattering->nb_input_dims; i++) {
+    const std::tuple<int, int, int> &implicit_def = undecided_dimensions.front();
+    int dimension = std::get<0>(implicit_def);
+    undecided_dimensions.erase(std::begin(undecided_dimensions));
+    auto explicit_it = std::find_if(std::begin(candidate_explicit_dimensions),
+                                    std::end(candidate_explicit_dimensions),
+                                    [dimension](const std::tuple<int, int, int> &element) {
+      return std::get<0>(element) == dimension;
+    });
+    assert(explicit_it != std::end(candidate_explicit_dimensions));
+    explicit_dimensions.push_back(*explicit_it);
+  }
+  std::copy(std::begin(undecided_dimensions), std::end(undecided_dimensions),
+            std::back_inserter(implicit_dimensions));
+
+  return std::make_pair(explicit_dimensions, implicit_dimensions);
+}
+
 std::tuple<int, ClayArray, int>
 chlore_shifted(osl_relation_p scattering) {
   clay_array_p current_parameters = clay_array_malloc();
   clay_array_p beta = clay_beta_extract(scattering);
 
   // If normalized form is not
-  //  b a b a b a b a a p p c
-  // [0 1 0 0 0 0 0 x x N M c]
-  // [      1 0 0 0 x x N M c]
-  // [          1 0 x x N M c]
+  //  b a b a b a b a b a p p c
+  // [0 1 0 0 0 0 0 x 0 x N M c]
+  // [      1 0 0 0 x 0 x N M c]
+  // [          1 0 x 0 x N M c]
+  //                * no explicit definition line for implicit dimension
+  // [                1 0 N M c]
   // there is not much we can do right now, but this should not happen for
   // valid scheduling realtions.
+
+  std::vector<std::tuple<int, int, int>> explicit_dimensions, implicit_dimensions;
+  std::tie(explicit_dimensions, implicit_dimensions) = chlore_dimension_definitions(scattering);
 
   for (int depth = 0; depth < beta->size - 1; depth++) {
     clay_array_clear(current_parameters);
 
-    bool shifted = false;
-    clay_array_clear(current_parameters);
-    for (int i = scattering->nb_columns - scattering->nb_parameters - 1;
-         i < scattering->nb_columns - 1; i++) {
-      int value = osl_int_get_si(scattering->precision, scattering->m[2*depth + 1][i]);
-      clay_array_add(current_parameters, value);
-      if (value != 0) {
+    auto depth_compare = [depth](const std::tuple<int, int, int> &element) -> bool{
+      return std::get<0>(element) == depth;
+    };
+    auto expl_it = std::find_if(std::begin(explicit_dimensions), std::end(explicit_dimensions),
+                                depth_compare);
+    auto impl_it = std::find_if(std::begin(implicit_dimensions), std::end(implicit_dimensions),
+                                depth_compare);
+    assert((expl_it == std::end(explicit_dimensions)) ^ (impl_it == std::end(implicit_dimensions)));
+
+    // Check explicit dimension shift.
+    if (expl_it != std::end(explicit_dimensions)) {
+      bool shifted = false;
+      clay_array_clear(current_parameters);
+      int row = std::get<1>(*expl_it);
+
+      for (int i = scattering->nb_columns - scattering->nb_parameters - 1;
+           i < scattering->nb_columns - 1; i++) {
+        int value = osl_int_get_si(scattering->precision, scattering->m[row][i]);
+        clay_array_add(current_parameters, value);
+        if (value != 0) {
+          shifted = true;
+        }
+      }
+      int constant  = osl_int_get_si(scattering->precision,
+                                     scattering->m[row][scattering->nb_columns - 1]);
+      if (constant != 0) {
         shifted = true;
       }
-    }
-    int constant  = osl_int_get_si(scattering->precision,
-                                   scattering->m[2*depth + 1][scattering->nb_columns - 1]);
-    if (constant != 0) {
-      shifted = true;
-    }
 
-    if (shifted) {
-      // return parameters and value
-      return std::make_tuple(depth + 1,
-                             ClayArray(current_parameters),
-                             constant);
+      if (shifted) {
+        // return parameters and value
+        return std::make_tuple(depth + 1,
+                               ClayArray(current_parameters),
+                               constant);
+      }
+    } else if (impl_it != std::end(implicit_dimensions)) {
+      bool shifted = false;
+      clay_array_clear(current_parameters);
+      int row_1 = std::get<1>(*impl_it);
+      int row_2 = std::get<2>(*impl_it);
+
+      int factor_1 = osl_int_get_si(scattering->precision, scattering->m[row_1][2*depth + 2]);
+      int factor_2 = osl_int_get_si(scattering->precision, scattering->m[row_2][2*depth + 2]);
+
+      for (int i = scattering->nb_columns - scattering->nb_parameters - 1;
+           i < scattering->nb_columns; i++) {
+        int value_1 = osl_int_get_si(scattering->precision, scattering->m[row_1][i]);
+        int value_2 = osl_int_get_si(scattering->precision, scattering->m[row_2][i]);
+
+        if (((value_1 % factor_1) == 0) && ((value_2 % factor_2) == 0) &&
+            (value_1 / factor_1 == value_2 / factor_2) && value_1 != 0) {
+          clay_array_add(current_parameters, value_1 / -factor_1);
+          shifted = true;
+        } else {
+          clay_array_add(current_parameters, 0);
+        }
+      }
+      // Last value in current_parameters is actually a constant shift.
+      int constant = current_parameters->data[current_parameters->size - 1];
+      current_parameters->size -= 1;
+
+      if (shifted) {
+        return std::make_tuple(depth + 1,
+                               ClayArray(current_parameters),
+                               constant);
+      }
     }
   }
   clay_array_free(beta);
@@ -1503,22 +1873,65 @@ lookup_grains(osl_scop_p scop, osl_statement_p statement) {
   return chlore_lookup_aii(scop, statement, false, chlore_extract_grain);
 }
 
+inline std::vector<std::tuple<ClayArray, int, int>>
+lookup_pseudo_stripmine_consants(osl_scop_p scop, osl_statement_p statement) {
+  return chlore_lookup_aii(scop, statement, true, chlore_extract_pseudo_stripmine_constant);
+}
+
 // assumes normalized
 std::tuple<int, int, int>
 chlore_reshaped(osl_relation_p relation) {
-  for (int i = 1; i < relation->nb_rows; i += 2) { // ignore beta definitions
-    for (int j = 0; j < relation->nb_input_dims; j++) {
-      if ((i - 1) / 2 == j) {
-        continue;
-      }
+  std::vector<std::tuple<int, int, int>> explicit_dimensions, implicit_dimensions;
+  std::tie(explicit_dimensions, implicit_dimensions) = chlore_dimension_definitions(relation);
+  clay_array_p beta = clay_beta_extract(relation);
+  ClayArray raiibeta(beta); // RAII
 
-      int value =  osl_int_get_si(relation->precision,
-                              relation->m[i][relation->nb_output_dims + 1 + j]);
-      if (value != 0) {
-        return std::make_tuple((i + 1) / 2, j + 1, value);
+  for (int depth = 0; depth < beta->size - 1; depth++) {
+    auto depth_compare = [depth](const std::tuple<int, int, int> &element) -> bool{
+      return std::get<0>(element) == depth;
+    };
+    auto expl_it = std::find_if(std::begin(explicit_dimensions), std::end(explicit_dimensions),
+                                depth_compare);
+    auto impl_it = std::find_if(std::begin(implicit_dimensions), std::end(implicit_dimensions),
+                                depth_compare);
+    assert((expl_it == std::end(explicit_dimensions)) ^ (impl_it == std::end(implicit_dimensions)));
+
+    if (expl_it != std::end(explicit_dimensions)) {
+      int row = std::get<1>(*expl_it);
+
+      for (int j = 0; j < relation->nb_input_dims; ++j) {
+        if (j == depth)
+          continue;
+        int value = osl_int_get_si(relation->precision,
+                                   relation->m[row][relation->nb_output_dims + 1 + j]);
+        if (value != 0) {
+          return std::make_tuple(depth + 1, j + 1, value);
+        }
+      }
+    } else if (impl_it != std::end(implicit_dimensions)) {
+      int row_1 = std::get<1>(*impl_it);
+      int row_2 = std::get<2>(*impl_it);
+
+      int factor_1 = osl_int_get_si(relation->precision, relation->m[row_1][2*depth + 2]);
+      int factor_2 = osl_int_get_si(relation->precision, relation->m[row_2][2*depth + 2]);
+
+      for (int j = 0; j < relation->nb_input_dims; ++j) {
+        if (j == depth)
+          continue;
+
+        int value_1 = osl_int_get_si(relation->precision,
+                                     relation->m[row_1][relation->nb_output_dims + 1 + j]);
+        int value_2 = osl_int_get_si(relation->precision,
+                                     relation->m[row_2][relation->nb_output_dims + 1 + j]);
+
+        if (((value_1 % factor_1) == 0) && ((value_2 % factor_2) == 0) &&
+            (value_1 / factor_1 == value_2 / factor_2) && value_1 != 0) {
+          return std::make_tuple(depth + 1, j + 1, value_1 / -factor_1);
+        }
       }
     }
   }
+
   return std::make_tuple(TRANSFORMATION_NOT_FOUND, -1, -1);
 }
 
@@ -1546,7 +1959,7 @@ chlore_implicitly_skewed(osl_relation_p relation) {
       break;
   }
   nb_explicit_dims = (nb_explicit_dims - 1) / 2;  // do not count betas
-  assert(nb_explicit_dims == relation->nb_input_dims);
+//  assert(nb_explicit_dims == relation->nb_input_dims);
 
   int nb_implicit_dims = (relation->nb_output_dims - 1) / 2 - nb_explicit_dims;
 
@@ -1581,8 +1994,16 @@ lookup_implicit_skew(osl_statement_p statement) {
 
 std::tuple<int, int>
 chlore_fix_diagonal(osl_relation_p relation) {
+  std::vector<std::tuple<int, int, int>> explicit_dimensions;
+  std::tie(explicit_dimensions, std::ignore) = chlore_dimension_definitions(relation);
+
   for (int i = 0; i < relation->nb_input_dims; i++) {
-    int row = 1 + 2*i;
+    auto it = std::find_if(std::begin(explicit_dimensions), std::end(explicit_dimensions),
+                           [i](const std::tuple<int, int, int> &element) {
+      return std::get<0>(element) == i;
+    });
+    assert(it != std::end(explicit_dimensions) && "couldn't find a corresponding explicit dimension; relation is invalid");
+    int row = std::get<1>(*it);
     int column = 1 + relation->nb_output_dims + i;
     int value = osl_int_get_si(relation->precision, relation->m[row][column]);
     assert(value != 0 && "input dimension part is suspicious, possibly invalid relation");
@@ -1872,6 +2293,39 @@ void chlore_match_betas(osl_scop_p original, osl_scop_p transformed,
   clay_array_free(empty_prefix);
 }
 
+// Find first explicitly-defined dimension.
+int chlore_find_first_explicit(osl_statement_p stmt, clay_array_p beta) {
+  int explicit_dim = -1;
+  osl_relation_p scattering;
+  osl_statement_p unused;
+  clay_beta_find_relation(stmt, beta, &unused, &scattering);
+  for (int i = 1; i < scattering->nb_output_dims; i += 2) {
+    for (int j = 0; j < scattering->nb_rows; j++) {
+      if (!osl_int_zero(scattering->precision, scattering->m[j][0]))
+        continue;
+      if (!osl_int_zero(scattering->precision, scattering->m[j][1 + i])) {
+        explicit_dim = (i + 1) / 2;
+        break;
+      }
+    }
+  }
+  assert(explicit_dim != -1);
+
+  return explicit_dim;
+}
+
+void chlore_add_inverted_commands(std::deque<std::string> last,
+                                  std::vector<ChloreBetaTransformation> transformed_commands) {
+  std::stringstream ss;
+  std::deque<ChloreBetaTransformation> inverted_commands =
+      chlore_complementary_beta_transformation(transformed_commands);
+  for (auto it = inverted_commands.rbegin(), eit = inverted_commands.rend(); it != eit; ++it) {
+    ss << *it;
+    last.push_front(ss.str());
+    ss.str("");
+  }
+}
+
 void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
   osl_statement_p stmt, original_stmt, transformed_stmt;
   int nb_stmts = 0;
@@ -1935,19 +2389,16 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         ClayList condition;
         std::tie(beta, condition) = transformed_tuple;
 
-        std::stringstream ss;
-        std::deque<ChloreBetaTransformation> inverted_commands = chlore_complementary_beta_transformation(transformed_commands);
-        for (auto it = inverted_commands.rbegin(), eit = inverted_commands.rend(); it != eit; ++it) {
-          ss << *it;
-          last.push_front(ss.str());
-          ss.str("");
-        }
+        chlore_add_inverted_commands(last, transformed_commands);
 
+        std::stringstream ss;
         ss << "iss " << beta << " " << condition << "\n";
         last.push_front(ss.str());
         clay_collapse(transformed, beta, options);
       }
 
+      transformed_commands.clear();
+      original_commands.clear();
       if (original_iss || transformed_iss) {
         continue;
       }
@@ -1989,11 +2440,199 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         clay_linearize(transformed, beta, depth, options);
       }
 
-
       if (transformed_sizes.size() != 0 ||
           original_sizes.size() != 0) {
         continue;
       }
+
+
+      // Check for pseudo-stripmine (cx >= 0, cx <= 0)
+      // requires skewing to denormalized form.
+
+      optional<std::tuple<ClayArray, int, int>> original_pseudo_sm =
+          lookup_pseudo_stripmine_constants2(original, original_stmt, original_commands, options);
+      optional<std::tuple<ClayArray, int, int>> transformed_pseudo_sm =
+          lookup_pseudo_stripmine_constants2(transformed, transformed_stmt, transformed_commands, options);
+
+      // TODO: create sequence for original
+
+      if (transformed_pseudo_sm) {
+        ClayArray beta;
+        int depth;
+        auto data = static_cast<std::tuple<ClayArray, int, int>>(transformed_pseudo_sm);
+        std::tie(beta, depth, std::ignore) = data;
+
+        int explicit_dim = chlore_find_first_explicit(transformed_stmt, beta);
+        assert(explicit_dim != depth);
+
+        chlore_add_inverted_commands(last, transformed_commands);
+
+        std::stringstream ss;
+        int target_depth;
+        if (explicit_dim < depth) {
+          int current = depth;
+          while (current != explicit_dim) {
+            ss << "interchange " << beta << " @" << depth - current + explicit_dim
+               << " with @" << depth - (current - 1) + explicit_dim << "\n";
+            last.push_front(ss.str());
+            ss.str("");
+            clay_interchange(transformed, beta, current, current - 1, 0, options);
+            --current;
+          }
+          target_depth = explicit_dim;
+        } else {
+          int current = depth;
+          while (current + 1 != explicit_dim) {
+            ss << "interchange " << beta << " @" << (depth + explicit_dim - 1 - current)
+               << " with @" << (depth + explicit_dim - 2 - current) << "\n";
+            last.push_front(ss.str());
+            ss.str("");
+            clay_interchange(transformed, beta, current, current + 1, 0, options);
+            ++current;
+          }
+          target_depth = explicit_dim - 1;
+        }
+
+        ss << "skew " << beta << " @" << target_depth << " by " << "1x@" << target_depth + 1 << "\n";
+        last.push_front(ss.str());
+        ss.str("");
+
+        ss << "stripmine " << beta << " @" << target_depth << " 1\n";
+        last.push_front(ss.str());
+        ss.str("");
+
+        clay_skew(transformed, beta, target_depth, target_depth + 1, -1, options);
+
+        // If the beta that is removed during linearization is not zero, split away first.
+        clay_array_p cbeta = static_cast<clay_array_p>(beta);
+        if (target_depth < cbeta->size && cbeta->data[target_depth] != 0) {
+          transformed_commands.clear();
+          beta = ClayArray(chlore_detach_statement_until_depth(transformed,
+                                      beta, target_depth, transformed_commands, options));
+          chlore_add_inverted_commands(last, transformed_commands);
+        }
+
+        clay_linearize(transformed, beta, target_depth, options);
+      }
+
+
+      transformed_commands.clear();
+      original_commands.clear();
+      if (transformed_pseudo_sm) {
+        continue;
+      }
+
+#if 0
+      std::vector<std::tuple<ClayArray, int, int>> original_pseudo_sm =
+          lookup_pseudo_stripmine_consants(original, original_stmt);
+      std::vector<std::tuple<ClayArray, int, int>> transformed_pseudo_sm =
+          lookup_pseudo_stripmine_consants(transformed, transformed_stmt);
+
+      vector_pair_remove_identical_items(original_pseudo_sm, transformed_pseudo_sm);
+
+      for (auto const &data : original_pseudo_sm) {
+        ClayArray beta;
+        int depth;
+        int constant;
+        std::tie(beta, depth, constant) = data;
+        ClayArray parameters;
+
+        // TODO: check if the previous alpha is explicit
+        // and if it is, use it instead of first dimension and avoid interchange.
+        int explicit_dim = chlore_find_first_explicit(original_stmt, beta);
+
+        std::stringstream ss;
+
+        // TODO: check if explicit dim is not the last dim in the relation.
+//        if (depth != explicit_dim + 1) {
+//          ss << "interchange " << beta << " @" << explicit_dim + 1 << " with @" << depth << "\n";
+//          first.push_back(ss.str());
+//          ss.str("");
+//        }
+
+//        if (constant != 0) {
+//          ss << "shift " << beta << " @" << explicit_dim + 1 << " [] " << constant << "\n";
+//          first.push_back(ss.str());
+//          ss.str("");
+//        }
+
+//        ss << "skew " << beta << " @" << explicit_dim << " by 1x@" << explicit_dim + 1 << "\n";
+//        first.push_back(ss.str());
+//        ss.str("");
+
+//        ss << "linearize " << beta << " @" << explicit_dim << "\n";
+//        first.push_back(ss.str());
+//        ss.str("");
+
+//        if (depth != explicit_dim + 1) {
+//          clay_interchange(original, beta, explicit_dim + 1, depth, 0, options);
+//        }
+//        if (constant != 0) {
+
+//        }
+      }
+
+      for (auto const &data : transformed_pseudo_sm) {
+        ClayArray beta;
+        int depth;
+        int constant;
+        std::tie(beta, depth, constant) = data;
+        ClayArray parameters;
+
+        // If the next dim is explicit, no interchange, linearize current.
+        int explicit_dim = chlore_find_first_explicit(transformed_stmt, beta);
+        assert(explicit_dim != depth);
+
+        std::stringstream ss;
+        int target_depth;
+        if (explicit_dim < depth) {
+          int current = depth;
+          while (current != explicit_dim) {
+            ss << "interchange " << beta << " @" << depth - current + explicit_dim
+               << " with @" << depth - (current - 1) + explicit_dim << "\n";
+            last.push_front(ss.str());
+            ss.str("");
+            clay_interchange(transformed, beta, current, current - 1, 0, options);
+            --current;
+          }
+          target_depth = explicit_dim;
+        } else {
+          int current = depth;
+          while (current + 1 != explicit_dim) {
+            ss << "interchange " << beta << " @" << (depth + explicit_dim - 1 - current)
+               << " with @" << (depth + explicit_dim - 2 - current) << "\n";
+            last.push_front(ss.str());
+            ss.str("");
+            clay_interchange(transformed, beta, current, current + 1, 0, options);
+            ++current;
+          }
+          target_depth = explicit_dim - 1;
+        }
+//        ss << "interchange " << beta << " @" << explicit_dim << " with @" << depth << "\n";
+//        last.push_front(ss.str());
+//        ss.str("");
+
+        if (constant != 0) {
+          ss << "shift " << beta << " @" << target_depth << " [] " << -constant << "\n";
+          last.push_front(ss.str());
+          ss.str("");
+        }
+
+        ss << "skew " << beta << " @" << target_depth << " by " << "1x@" << target_depth + 1 << "\n";
+        last.push_front(ss.str());
+        ss.str("");
+
+        ss << "stripmine " << beta << " @" << target_depth << " 1\n";
+        last.push_front(ss.str());
+        ss.str("");
+
+        if (constant != 0) {
+          clay_shift(transformed, beta, target_depth, parameters, -constant, options);
+        }
+        clay_skew(transformed, beta, target_depth, target_depth + 1, -1, options);
+        clay_linearize(transformed, beta, target_depth, options);
+      }
+#endif
 
 
       // Check for grain/densify
@@ -2252,10 +2891,11 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
 
         std::stringstream ss;
         ss << "reshape " << beta << " @" << dim << " by "
-           << coefficient << "x@" << input << "\n";
+           << -coefficient << "x@" << input << "\n";
         first.push_back(ss.str());
 
-        clay_reshape(original, beta, dim, input, coefficient, options);
+        clay_reshape(original, beta, dim, input, -coefficient, options);
+        continue;
       }
 
       potential_reshape = lookup_reshape(transformed_stmt);
@@ -2266,10 +2906,11 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
 
         std::stringstream ss;
         ss << "reshape " << beta << " @" << dim << " by "
-           << -coefficient << "x@" << input << "\n";
-        first.push_back(ss.str());
+           << coefficient << "x@" << input << "\n";
+        last.push_front(ss.str());
 
         clay_reshape(transformed, beta, dim, input, coefficient, options);
+        continue;
       }
 
 
@@ -2347,6 +2988,67 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
   }
 }
 
+void chlore_relation_replace_extra_dimensions(osl_relation_p relation) {
+  // Find normalized form.
+  clay_relation_normalize_alpha(relation); // XXX: this may not be necessary
+
+  std::vector<std::tuple<int, int, int>> explicit_definitions;
+  std::tie(explicit_definitions, std::ignore) = chlore_dimension_definitions(relation);
+
+  assert(explicit_definitions.size() == (size_t) relation->nb_input_dims && "some input dimensions are unused or conflicted, scheduling is invalid");
+
+  for (int i = 0; i < relation->nb_rows; i++) {
+    if (!osl_int_zero(relation->precision, relation->m[i][0]))
+      continue;
+    if (clay_util_is_row_beta_definition(relation, i))
+      continue;
+    auto explicit_it = std::find_if(std::begin(explicit_definitions), std::end(explicit_definitions),
+                                    [i](const std::tuple<int, int, int> &element) {
+      return std::get<1>(element) == i;
+    });
+    if (explicit_it != std::end(explicit_definitions))
+      continue;
+
+    // turn it into an a pair of complementary inequalities.
+    osl_int_set_si(relation->precision,
+                   &relation->m[i][0], 1);
+    osl_relation_insert_blank_row(relation, -1);
+    osl_int_set_si(relation->precision,
+                   &relation->m[relation->nb_rows - 1][0], 1);
+    // Negate by hand instead of using "negate_row" to ensure x >= 0, x <= 0 situation.
+    for (int j = 1; j < relation->nb_columns; j++) {
+      osl_int_oppose(relation->precision,
+                     &relation->m[relation->nb_rows - 1][j],
+                     relation->m[i][j]);
+    }
+  }
+
+  // TODO: check if there is no explicit definition duplications or clashes.
+
+
+  // Expect scheduling to have the input part with full column rang (global validity)
+  // Only fix extra rows that may have been added by an optimizer.
+
+
+  // Extract definitions in terms of input of explicitly-defined dimensions.
+
+  // Check if has linearly dependent explicitly defined dimensions.
+  // If it does have n, replace the last n explicit definitions by pairs
+  // of inequalities turning them into implicit definitions.
+
+  // Do the same for scalar alpha dimensions.
+}
+
+void chlore_scop_replace_extra_dimensions(osl_scop_p scop) {
+  for (osl_statement_p stmt = scop->statement;
+       stmt != NULL; stmt = stmt->next) {
+    for (osl_relation_p scattering = stmt->scattering;
+         scattering != NULL; scattering = scattering->next) {
+      chlore_relation_replace_extra_dimensions(scattering);
+    }
+  }
+}
+
 void chlore_usage(const char *name) {
   fprintf(stderr, "%s <original.scop> <transformed.scop>\n", name);
 }
@@ -2385,6 +3087,7 @@ int main(int argc, char **argv) {
     return -4;
   }
 
+  chlore_scop_replace_extra_dimensions(transformed);
   chlore_find_sequence(original, transformed);
 
   return 0;
