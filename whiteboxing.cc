@@ -31,6 +31,12 @@ int chlore_linearizable_lines_impl(osl_scop_p scop, clay_array_p beta, int depth
                                    int pseudo_linearizable);
 int chlore_extract_stripmine_size_impl(osl_scop_p scop, clay_array_p beta, int depth, int pseudo_linearizable);
 
+class optional_empty {
+  operator bool() const {
+    return false;
+  }
+};
+
 template <typename T>
 class optional {
 private:
@@ -39,6 +45,7 @@ private:
 public:
   optional(const T &t) : has_value(true), value(t) {}
   optional() : has_value(false) {}
+  optional(const optional_empty &) : has_value(false) {}
 
   operator bool () const {
     return has_value;
@@ -66,6 +73,7 @@ private:
 public:
   optional(T *t) : value(t | 0x1) {}
   optional() : value(0) {}
+  optional(const optional_empty &) : value(0) {}
 
   operator bool () const {
     return value & 0x1;
@@ -83,11 +91,6 @@ public:
 template <typename T>
 optional<T> make_optional(T t) {
   return optional<T>(t);
-}
-
-template <typename T>
-optional<T> make_empty() {
-  return optional<T>();
 }
 
 struct ChloreBetaTransformation {
@@ -1401,7 +1404,7 @@ lookup_iss_conditions(osl_scop_p scop, osl_statement_p statement,
     return make_optional(std::make_tuple(ClayArray(clay_array_clone(beta)),
                          ClayList(condition)));
   } else {
-    return make_empty<std::tuple<ClayArray, ClayList>>();
+    return optional_empty();
   }
 }
 
@@ -1418,7 +1421,7 @@ lookup_pseudo_stripmine_constants2(osl_scop_p scop, osl_statement_p statement,
     assert(size >= 0);
     return make_optional(std::make_tuple(ClayArray(beta), beta->size, size));
   } else {
-    return make_empty<std::tuple<ClayArray, int, int>>();
+    return optional_empty();
   }
 }
 
@@ -2201,7 +2204,7 @@ static optional<std::pair<ClayArray, ClayArray>> chlore_find_first_beta_mismatch
     return make_optional(std::make_pair(ClayArray(candidate_original_beta),
                                         ClayArray(candidate_transformed_beta)));
   } else {
-    return make_empty<std::pair<ClayArray, ClayArray>>();
+    return optional_empty();
   }
 }
 
