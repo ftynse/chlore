@@ -1992,6 +1992,116 @@ lookup_implicit_skew(osl_statement_p statement) {
   return std::make_tuple(ClayArray(), TRANSFORMATION_NOT_FOUND, -1, -1);
 }
 
+int chlore_unembeddable(osl_scop_p scop, clay_array_p beta) {
+  osl_statement_p statement = NULL, stmt;
+  osl_relation_p scattering = NULL, scat;
+  int i, depth;
+  int row_1, row_2;
+  clay_array_p beta_prefix;
+
+  if (!scop || !beta)
+    return CLAY_ERROR_BETA_NOT_FOUND;
+
+  if (beta->size <= 1)
+    return CLAY_ERROR_DEPTH_OVERFLOW;
+
+  depth = beta->size - 2;
+  beta_prefix = clay_array_clone(beta);
+  beta_prefix->size -= 1;
+
+  for (stmt = scop->statement; stmt != NULL;
+       stmt = stmt->next) {
+    for (scat = stmt->scattering; scat != NULL;
+         scat = scat->next) {
+      clay_array_p scattering_beta = clay_beta_extract(scat);
+      if (clay_beta_equals(scattering_beta, beta)) {
+        statement = stmt;
+        scattering = scat;
+      }
+      clay_array_free(scattering_beta);
+    }
+  }
+  if (statement == NULL || scattering == NULL)
+    return CLAY_ERROR_BETA_NOT_FOUND;
+
+  if (beta->size != (scattering->nb_output_dims + 1) / 2)
+    return CLAY_ERROR_NOT_BETA_STMT;
+
+  row_1 = -1;
+  row_2 = -1;
+  for (i = 0; i < scattering->nb_rows; i++) {
+    if (!osl_int_zero(scattering->precision, scattering->m[i][2 * depth + 2])) {
+      if (row_1 == -1) {
+        row_1 = i;
+        continue;
+      } else if (row_2 == -1) {
+        row_2 = i;
+        continue;
+      } else {
+        return CLAY_ERROR_WRONG_COEFF;
+      }
+    }
+  }
+  if (row_1 == -1 || row_2 == -1)
+    return CLAY_ERROR_WRONG_COEFF;
+
+  for (i = 1; i < scattering->nb_columns; i++) {
+    if (i == 2 * depth + 2)
+
+      continue;
+    if (!osl_int_zero(scattering->precision, scattering->m[row_1][i]))
+      return CLAY_ERROR_WRONG_COEFF;
+    if (!osl_int_zero(scattering->precision, scattering->m[row_2][i]))
+      return CLAY_ERROR_WRONG_COEFF;
+  }
+  if (!osl_int_one(scattering->precision, scattering->m[row_1][0]))
+    return CLAY_ERROR_WRONG_COEFF;
+  if (!osl_int_one(scattering->precision, scattering->m[row_2][0]))
+    return CLAY_ERROR_WRONG_COEFF;
+
+  for (stmt = scop->statement; stmt != NULL;
+       stmt = stmt->next) {
+    for (scat = stmt->scattering; scat != NULL;
+         scat = scat->next) {
+      if (clay_beta_check_relation(scat, beta_prefix)) {
+        clay_array_p local_beta = clay_beta_extract(scat);
+        if (!clay_beta_equals(beta, local_beta)) {
+          clay_array_free(local_beta);
+          return CLAY_ERROR_WRONG_BETA;
+        }
+        clay_array_free(local_beta);
+      }
+    }
+  }
+
+  return CLAY_SUCCESS;
+}
+
+optional<ClayArray>
+chlore_unembedded(osl_scop_p scop, osl_statement_p stmt,
+                  std::vector<ChloreBetaTransformation> &commands, clay_options_p options) {
+  for (osl_relation_p scattering = stmt->scattering;
+       scattering != NULL; scattering = scattering->next) {
+    clay_array_p beta = clay_beta_extract(scattering);
+
+    int r = chlore_unembeddable(scop, beta);
+    if (r == CLAY_ERROR_WRONG_BETA) {
+      clay_array_p split_beta = chlore_detach_statement_until_depth(scop, beta, beta->size - 1, commands, options);
+      for (int i = split_beta->size; i < beta->size; i++)
+        clay_array_add(split_beta, 0);
+      assert(chlore_unembeddable(scop, split_beta) == CLAY_SUCCESS);
+      clay_array_free(beta);
+      return make_optional(ClayArray(split_beta));
+    } else if (r == CLAY_SUCCESS) {
+      return make_optional(ClayArray(beta));
+    }
+
+    clay_array_free(beta);
+  }
+  return optional_empty();
+}
+
+
 std::tuple<int, int>
 chlore_fix_diagonal(osl_relation_p relation) {
   std::vector<std::tuple<int, int, int>> explicit_dimensions;
@@ -2352,8 +2462,42 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
   for (i = 0; i < nb_stmts; i++) {
 
     while (1) {
-      // Try for iss
       std::vector<ChloreBetaTransformation> original_commands, transformed_commands;
+
+      optional<ClayArray> original_embed = chlore_unembedded(original, original_stmt,
+                                                             original_commands, options);
+      optional<ClayArray> transformed_embed = chlore_unembedded(transformed, transformed_stmt,
+                                                                transformed_commands, options);
+      if (original_embed) {
+        ClayArray beta = static_cast<ClayArray>(transformed_embed);
+
+        std::stringstream ss;
+        ss << "unembed " << beta << "\n";
+        first.push_back(ss.str());
+
+        clay_unembed(original, beta, options);
+      }
+
+      if (transformed_embed) {
+        ClayArray beta = static_cast<ClayArray>(transformed_embed);
+        clay_array_p cbeta = static_cast<clay_array_p>(beta);
+        cbeta->size -= 1;
+
+        chlore_add_inverted_commands(last, transformed_commands);
+
+        std::stringstream ss;
+        ss << "embed " << beta << "\n";
+        last.push_front(ss.str());
+
+        cbeta->size += 1;
+        clay_unembed(transformed, beta, options);
+      }
+
+      if (original_embed || transformed_embed) {
+        continue;
+      }
+
+      // Try for iss
       optional<std::tuple<ClayArray, ClayList>> original_iss =
         lookup_iss_conditions(original, original_stmt, original_commands, options);
 
