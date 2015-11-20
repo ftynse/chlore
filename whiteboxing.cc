@@ -1655,33 +1655,79 @@ chlore_dimension_definitions(osl_relation_p scattering) {
   std::vector<std::tuple<int, int, int>> candidate_explicit_dimensions;
   std::vector<std::tuple<int, int, int>> candidate_implicit_dimensions;
   for (int depth = 0; depth < beta->size - 1; depth++) {
-    int row = clay_util_relation_get_line(scattering, 2*depth + 1);
-    bool is_explicit = false;
-    if (osl_int_zero(scattering->precision, scattering->m[row][0])) { // explicit definition found
-      // Check this definition is not linearly dependent with other explicit definitions.
-      candidate_explicit_dimensions.push_back(std::make_tuple(depth, row, -1));
-      is_explicit = chlore_explicit_dimensions_independent(scattering, candidate_explicit_dimensions);
-      if (!is_explicit) {
-        candidate_explicit_dimensions.erase(--candidate_explicit_dimensions.end());
-      }
-    }
-    if (!is_explicit) {
-      // Look for complementary inequality
-      osl_int_t value;
-      osl_int_init(scattering->precision, &value);
-      osl_int_oppose(scattering->precision, &value, scattering->m[row][2*depth + 2]);
+    for (int row = 0; row < scattering->nb_rows; row++) {
+      if (osl_int_zero(scattering->precision, scattering->m[row][2*depth + 2]))
+        continue;
+      //    bool is_explicit = false;
+      if (osl_int_zero(scattering->precision, scattering->m[row][0])) { // explicit definition found
+        candidate_explicit_dimensions.push_back(std::make_tuple(depth, row, -1));
+      } else if (osl_int_one(scattering->precision, scattering->m[row][0])) {
+        // Look for complementary inequality
+        osl_int_t value;
+        osl_int_init(scattering->precision, &value);
+        osl_int_oppose(scattering->precision, &value, scattering->m[row][2*depth + 2]);
 
-      bool found = false;
-      for (int i = row + 1; i < scattering->nb_rows; i++) {
-        if (osl_int_eq(scattering->precision, value, scattering->m[i][2*depth + 2])) {
-          candidate_implicit_dimensions.push_back(std::make_tuple(depth, row, i));
-          found = true;
-          break;
+        bool found = false;
+        for (int i = row + 1; i < scattering->nb_rows; i++) {
+          if (osl_int_eq(scattering->precision, value, scattering->m[i][2*depth + 2]) &&
+              osl_int_one(scattering->precision, scattering->m[i][0])) {
+            candidate_implicit_dimensions.push_back(std::make_tuple(depth, row, i));
+            found = true;
+            break;
+          }
         }
+        osl_int_clear(scattering->precision, &value);
+        if (found) // XXX: may not work with multiple implicit definitions...
+          break;
       }
-      osl_int_clear(scattering->precision, &value);
     }
   }
+
+  // Remove explicit definitions linearly dependent on other definitions.
+  std::vector<std::tuple<int, int, int>> explicit_candidate_subset;
+  explicit_candidate_subset.reserve(candidate_explicit_dimensions.size());
+  for (size_t i = 0; i < candidate_explicit_dimensions.size(); i++) {
+    explicit_candidate_subset.push_back(candidate_explicit_dimensions[i]);
+    bool linearly_dependent = !chlore_explicit_dimensions_independent(scattering, explicit_candidate_subset);
+    if (linearly_dependent) {
+      int dim = std::get<0>(candidate_explicit_dimensions[i]);
+      auto dim_finder = [dim](const std::tuple<int, int, int> &element) {
+                          return std::get<0>(element) == dim;
+                        };
+      // If this dimension is implicitly defined, it is safe to remove.
+      if (std::find_if(std::begin(candidate_implicit_dimensions), std::end(candidate_implicit_dimensions),
+                       dim_finder) != std::end(candidate_implicit_dimensions)) {
+        explicit_candidate_subset.pop_back();
+      // Otherwise look if it is possible to remove another implicitly defined dimension.
+      } else {
+        bool found = false;
+        for (size_t j = 0; j < explicit_candidate_subset.size(); j++) {
+          std::vector<std::tuple<int, int, int>> explicit_candidate_subsubset =
+              std::vector<std::tuple<int, int, int>>(std::begin(explicit_candidate_subset),
+                                                     std::end(explicit_candidate_subset));
+          explicit_candidate_subsubset.erase(std::begin(explicit_candidate_subsubset) + j);
+          int dim = std::get<0>(explicit_candidate_subset[j]);
+          auto dim_finder = [dim](const std::tuple<int, int, int> &element) {
+                              return std::get<0>(element) == dim;
+                            };
+          if (std::find_if(std::begin(candidate_implicit_dimensions), std::end(candidate_implicit_dimensions),
+                           dim_finder) == std::end(candidate_implicit_dimensions)) {
+            continue;
+          }
+          if (chlore_explicit_dimensions_independent(scattering, explicit_candidate_subsubset)) {
+            explicit_candidate_subset.erase(std::begin(explicit_candidate_subset) + j);
+            found = true;
+            break;
+          }
+        }
+        // If couldn't find such dimension, remove current.
+        if (!found) {
+          explicit_candidate_subset.pop_back();
+        }
+      }
+    }
+  }
+  candidate_explicit_dimensions = explicit_candidate_subset;
 
 #ifndef NDEBUG
   bool explicit_unique = is_unique(candidate_explicit_dimensions,
