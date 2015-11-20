@@ -109,21 +109,7 @@ void postprocess_mapping(std::map<int, ClayArray> &mapping, int extra_dims, osl_
 
 
     std::vector<std::pair<int, int>> contextualized_scalars = scalar_dimensions(scattering, context);
-    std::vector<std::pair<int, int>> scalars = scalar_dimensions(scattering);
-    int current_extra_dims = extra_dims - (scalars.size() - contextualized_scalars.size());
-//    std::vector<int> pseudo_beta = form_pseudo_beta(contextualized_scalars, scattering);
-//    std::set<int> nonscalar_dims;
-
-//    for (auto cit : context) {
-//      if (pseudo_beta.size() < cit.first.size())
-//        continue;
-//      if (std::equal(std::begin(cit.first), std::end(cit.first),
-//                     std::begin(pseudo_beta))) {
-//        nonscalar_dims.insert(std::begin(cit.second), std::end(cit.second));
-//      }
-//    }
-//    int current_extra_dims = extra_dims - nonscalar_dims.size();
-
+    int current_extra_dims = beta->size - (scattering->nb_output_dims - contextualized_scalars.size() + 2);
 
     beta->size -= current_extra_dims + 1;
     int updated = beta->data[initial_size - 1] + beta->data[beta->size - 1];
