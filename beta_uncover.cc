@@ -73,11 +73,6 @@ void uncover_betas(CloogLoop *loop, std::map<int, ClayArray> &mapping, clay_arra
   if (loop == NULL)
     return;
 
-  if ((depth % 2) == 1 && !loop->block) {
-//    assert(loop->inner != NULL && loop->inner->next == NULL);
-//    uncover_betas(loop->inner, mapping, prefix, depth + 1);
-  }
-
   if (loop->block) {
     int index = 0;
     for (CloogStatement *stmt = loop->block->statement; stmt != NULL; stmt = stmt->next, ++index) {
@@ -98,7 +93,7 @@ void uncover_betas(CloogLoop *loop, std::map<int, ClayArray> &mapping, clay_arra
 }
 
 // scop with no unions
-void postprocess_mapping(std::map<int, ClayArray> &mapping, int extra_dims, osl_scop_p scop,
+void postprocess_mapping(std::map<int, ClayArray> &mapping, osl_scop_p scop,
                          const std::map<std::vector<int>, std::set<int>> &context) {
   osl_statement_p stmt = scop->statement;
   for (auto &it : mapping) {
@@ -225,6 +220,7 @@ void replace_beta(osl_relation_p relation, clay_array_p beta,
     // in case of loop [i]->[2*i,i,i], CLooG does not generate surrounding loops for the inners, add more betas.
     int extra_betas = relation->nb_output_dims - (beta->size + static_cast<int>(scalar_dims.size()) - 1);
     fprintf(stderr, "[chlore] adding %d beta values\n", extra_betas);
+    assert(extra_betas == 0);
     for (int i = 0; i < extra_betas; i++) {
       clay_array_add(beta, 0);
     }
@@ -475,84 +471,6 @@ void scop_remove_adjacent_scalar_dimensions(osl_scop_p scop,
   }
 }
 
-void scop_remove_scalar_nonbetas(osl_scop_p scop) {
-  std::map<std::vector<int>, std::set<int>> empty_context;
-
-  // Verify all betas are properly recovered.
-#ifndef _NDEBUG
-  for (osl_statement_p stmt = scop->statement; stmt != NULL; stmt = stmt->next) {
-    for (osl_relation_p scattering = stmt->scattering;
-         scattering != NULL; scattering = scattering->next) {
-      std::vector<std::pair<int, int>> scalars = scalar_dimensions(scattering, empty_context);
-
-      std::vector<int> expected_beta_scalars;
-      expected_beta_scalars.reserve(scattering->nb_output_dims / 2 + 1);
-      for (int i = 0; i < (scattering->nb_output_dims + 1) / 2; i++) {
-        expected_beta_scalars.push_back(2*i);
-      }
-      assert(std::all_of(std::begin(expected_beta_scalars), std::end(expected_beta_scalars),
-                         [scalars](int d) {
-        return std::find_if(std::begin(scalars), std::end(scalars),
-                            [d](const std::pair<int, int> &entry) {
-                              return entry.first == d;
-                            }
-                           ) != std::end(scalars);
-      }));
-    }
-  }
-#endif
-
-  for (osl_statement_p stmt = scop->statement; stmt != NULL; stmt = stmt->next) {
-    for (osl_relation_p scattering = stmt->scattering;
-         scattering != NULL; scattering = scattering->next) {
-      std::vector<std::pair<int, int>> scalars = scalar_dimensions(scattering, empty_context);
-
-      // Sort by dimension number ascending.
-      std::sort(std::begin(scalars), std::end(scalars),
-                [](const std::pair<int, int> &a, const std::pair<int, int> &b) {
-        return a.first < b.first;
-      });
-
-      // Even values correspond to beta-dimensions, odd -- to scalar alpha dimensions.
-      // If all betas are present and known to be scalar, we can integrate an odd
-      // scalar dimensions and the subsequent beta to the preceeding beta-dimension.
-      auto odd_it = std::find_if(scalars.rbegin(), scalars.rend(),
-                                  [](const std::pair<int, int> &entry) {
-        return (entry.first % 2) == 1;
-      });
-      if (odd_it != scalars.rend()) {
-        int odd_dimension = odd_it->first;
-        int preceeding_even_dimension = odd_dimension - 1;
-
-        // Find all relations with the same beta-prefix, until preceeding
-        // beta dimension, inclusive.
-
-        // For all of them with scalar odd dimension at the same position,
-        // compute the lexicographic order and replace the preceeding beta
-        // with it.
-
-        // Should not be any clashes scalar/non-scalar on odd positions after
-        // removing extra alpha dimensions.
-      }
-
-    }
-  }
-}
-
-void scop_remove_linearly_dependent_dimensions(osl_scop_p scop) {
-  for (osl_statement_p stmt = scop->statement; stmt != NULL; stmt = stmt->next) {
-    for (osl_relation_p scattering = stmt->scattering;
-         scattering != NULL; scattering = scattering->next) {
-      // Check if linearly-dependent dimensions are present,
-      // and if they were added by the transormation.
-
-      // Their relation with the domain: is it possible that such extra
-      // dimension is actually executing before/after all iterations
-      // on the loop?  If it is, it may be replaced by a scalar/beta.
-    }
-  }
-}
-
 void reintroduce_betas(osl_scop_p scop, const std::map<std::vector<int>, std::set<int>> &context) {
   CloogState *cloog_state = cloog_state_malloc();
   CloogOptions *cloog_options = cloog_options_malloc(cloog_state);
@@ -570,17 +488,8 @@ void reintroduce_betas(osl_scop_p scop, const std::map<std::vector<int>, std::se
 
   std::map<int, ClayArray> mapping;
   uncover_betas(cloog_program->loop, mapping, ClayArray());
-  int extra_dims = (maximum_depth(cloog_program->loop) - 1) / 2;
 
-  for (auto it : mapping) {
-    std::cerr << it.first << " : " << it.second << std::endl;
-  }
-
-  postprocess_mapping(mapping, extra_dims, linear_scop, context);
-
-  for (auto it : mapping) {
-    std::cerr << it.first << " : " << it.second << std::endl;
-  }
+  postprocess_mapping(mapping, linear_scop, context);
 
   // We assume that after 'remove_unions" call the newly created statements have the
   // same order as the linearized list of scattering relaions in the original SCoP.
@@ -604,23 +513,12 @@ void reintroduce_betas(osl_scop_p scop, const std::map<std::vector<int>, std::se
   cloog_state_free(cloog_state);
 }
 
-int check_beta_uniqueness(osl_scop_p scop,
-                          const std::map<std::vector<int>, std::set<int>> &context) {
+int check_beta_uniqueness(osl_scop_p scop) {
   std::vector<ClayArray> betas;
   for (osl_statement_p stmt = scop->statement; stmt != NULL; stmt = stmt->next) {
     for (osl_relation_p scattering = stmt->scattering; scattering != NULL; scattering = scattering->next) {
       osl_relation_p scat = osl_relation_nclone(scattering, 1);
       clay_relation_normalize_alpha(scat);
-      std::vector<std::pair<int, int>> scalar_dims = scalar_dimensions(scat, context);
-//      for (size_t i = 0; i < scalar_dims.size(); i++) {
-//        std::cerr << scalar_dims[i].first << std::endl;
-//        if ((size_t) scalar_dims[i].first != 2*i) {
-//          return 0;
-//        }
-//      }
-//      if ((int) scalar_dims.size() * 2 - 1 != scat->nb_output_dims) {
-//        return 0;
-//      }
 
       ClayArray beta = ClayArray(clay_beta_extract(scat));
       if (std::find(std::begin(betas), std::end(betas), beta) != std::end(betas)) {
@@ -656,16 +554,9 @@ int main(int argc, char **argv) {
 
   scop_remove_adjacent_scalar_dimensions(scop, context);
 
-//  for (auto it: context) {
-//    std::copy(std::begin(it.first), std::end(it.first), std::ostream_iterator<int>(std::cerr, " "));
-//    std::cerr << " :  ";
-//    std::copy(std::begin(it.second), std::end(it.second), std::ostream_iterator<int>(std::cerr, " "));
-//    std::cerr << std::endl;
-//  }
-
   reintroduce_betas(scop, context);
 
-//  assert(check_beta_uniqueness(scop, context));
+  assert(check_beta_uniqueness(scop));
 
   osl_scop_print(stdout, scop);
   osl_scop_free(scop);
