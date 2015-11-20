@@ -1985,12 +1985,24 @@ chlore_reshaped(osl_relation_p relation) {
 }
 
 std::tuple<ClayArray, int, int, int>
-lookup_reshape(osl_statement_p statement) {
+lookup_reshape(osl_scop_p scop, osl_statement_p statement,
+               std::vector<ChloreBetaTransformation> &commands, clay_options_p options) {
   for (osl_relation_p scattering = statement->scattering; scattering != NULL;
        scattering = scattering->next) {
     std::tuple<int, int, int> found = chlore_reshaped(scattering);
     if (std::get<0>(found) != TRANSFORMATION_NOT_FOUND) {
-      return std::tuple_cat(std::make_tuple(ClayArray(clay_beta_extract(scattering))), found);
+      clay_array_p beta = clay_beta_extract(scattering);
+      int source, target, amount;
+      std::tie(source, target, amount) = found;
+      if (chlore_try_transformation(scop, clay_reshape, beta, source, target, amount, options)) {
+        return std::tuple_cat(std::make_tuple(ClayArray(beta)), found);
+      } else {
+        clay_array_p split_beta = chlore_detach_statement_from_loop(scop, beta, commands, options);
+        clay_array_add(split_beta, 0);
+        clay_array_free(beta);
+        clay_beta_normalize(scop);
+        return std::tuple_cat(std::make_tuple(ClayArray(split_beta)), found);
+      }
     }
   }
   return std::make_tuple(ClayArray(), TRANSFORMATION_NOT_FOUND, -1, -1);
@@ -2473,8 +2485,20 @@ int chlore_find_first_explicit(osl_statement_p stmt, clay_array_p beta) {
   return explicit_dim;
 }
 
+void chlore_add_commands(std::deque<std::string> &first,
+                         std::vector<ChloreBetaTransformation> &original_commands) {
+  std::stringstream ss;
+  for (auto cmd : original_commands) {
+    ss << cmd;
+    first.push_back(ss.str());
+    ss.str("");
+  }
+
+  original_commands.clear();
+}
+
 void chlore_add_inverted_commands(std::deque<std::string> &last,
-                                  const std::vector<ChloreBetaTransformation> &transformed_commands) {
+                                  std::vector<ChloreBetaTransformation> &transformed_commands) {
   std::stringstream ss;
   std::deque<ChloreBetaTransformation> inverted_commands =
       chlore_complementary_beta_transformation(transformed_commands);
@@ -2483,6 +2507,8 @@ void chlore_add_inverted_commands(std::deque<std::string> &last,
     last.push_front(ss.str());
     ss.str("");
   }
+
+  transformed_commands.clear();
 }
 
 void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
@@ -2561,13 +2587,9 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         ClayArray beta;
         std::tie(beta, std::ignore) = original_tuple;
 
-        std::stringstream ss;
-        for (const ChloreBetaTransformation &command : original_commands) {
-          ss << command;
-          first.push_back(ss.str());
-          ss.str("");
-        }
+        chlore_add_commands(first, original_commands);
 
+        std::stringstream ss;
         ss << "collapse " << beta << "\n";
         first.push_back(ss.str());
 
@@ -2590,8 +2612,6 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         clay_collapse(transformed, beta, options);
       }
 
-      transformed_commands.clear();
-      original_commands.clear();
       if (original_iss || transformed_iss) {
         continue;
       }
@@ -2709,8 +2729,6 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
       }
 
 
-      transformed_commands.clear();
-      original_commands.clear();
       if (transformed_pseudo_sm) {
         continue;
       }
@@ -3076,11 +3094,13 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
 
       // Reshape
       std::tuple<ClayArray, int, int, int> potential_reshape =
-          lookup_reshape(original_stmt);
+          lookup_reshape(original, original_stmt, original_commands, options);
       if (std::get<1>(potential_reshape) != TRANSFORMATION_NOT_FOUND) {
         ClayArray beta;
         int dim, input, coefficient;
         std::tie(beta, dim, input, coefficient) = potential_reshape;
+
+        chlore_add_commands(first, original_commands);
 
         std::stringstream ss;
         ss << "reshape " << beta << " @" << dim << " by "
@@ -3091,18 +3111,19 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         continue;
       }
 
-      potential_reshape = lookup_reshape(transformed_stmt);
+      potential_reshape = lookup_reshape(transformed, transformed_stmt, transformed_commands, options);
       if (std::get<1>(potential_reshape) != TRANSFORMATION_NOT_FOUND) {
         ClayArray beta;
         int dim, input, coefficient;
         std::tie(beta, dim, input, coefficient) = potential_reshape;
+
+        chlore_add_inverted_commands(last, transformed_commands);
 
         std::stringstream ss;
         ss << "reshape " << beta << " @" << dim << " by "
            << coefficient << "x@" << input << "\n";
         last.push_front(ss.str());
 
-        clay_reshape(transformed, beta, dim, input, coefficient, options);
         continue;
       }
 
