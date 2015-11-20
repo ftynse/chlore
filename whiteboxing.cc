@@ -2424,8 +2424,8 @@ int chlore_find_first_explicit(osl_statement_p stmt, clay_array_p beta) {
   return explicit_dim;
 }
 
-void chlore_add_inverted_commands(std::deque<std::string> last,
-                                  std::vector<ChloreBetaTransformation> transformed_commands) {
+void chlore_add_inverted_commands(std::deque<std::string> &last,
+                                  const std::vector<ChloreBetaTransformation> &transformed_commands) {
   std::stringstream ss;
   std::deque<ChloreBetaTransformation> inverted_commands =
       chlore_complementary_beta_transformation(transformed_commands);
