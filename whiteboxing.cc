@@ -3075,9 +3075,9 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
           clay_reverse(original, beta, dim, options);
           amount = -amount;
         }
-        ss << "grain " << beta << " @" << dim << " " << amount << "\n";
+        ss << "densify " << beta << " @" << dim << "\n";
 
-        clay_grain(original, beta, dim, amount, options);
+        clay_densify(original, beta, dim, options);
         continue;
       }
 
@@ -3098,7 +3098,7 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         }
         ss << "grain " << beta << " @" << dim << " " << amount << "\n";
 
-        clay_grain(transformed, beta, dim, amount, options);
+        clay_densify(transformed, beta, dim, options);
         continue;
       }
 
