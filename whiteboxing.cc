@@ -80,10 +80,14 @@ public:
   }
 
   operator T* () {
+    if (!(value & 0x1))
+      throw std::bad_cast();
     return value & ~0x1;
   }
 
   operator const T* () const {
+    if (!(value & 0x1))
+      throw std::bad_cast();
     return value & ~0x1;
   }
 };
