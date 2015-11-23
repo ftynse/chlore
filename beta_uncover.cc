@@ -24,39 +24,6 @@ std::vector<std::pair<int, int>> scalar_dimensions(osl_relation_p relation,
 
 std::vector<int> form_pseudo_beta(std::vector<std::pair<int, int>> scalars, osl_relation_p scattering);
 
-char *clay_array_string(clay_array_p array) {
-  size_t length = 3 + array->size * sizeof(int) * 4;
-  char *string = (char *) malloc(length);
-  char *start = string;
-  int i;
-  char buffer[sizeof(int) * 3 + 1];
-  int watermark = length;
-
-  snprintf(string, watermark, "[");
-  string += 1;
-  watermark -= 1;
-
-  for (i = 0; i < array->size - 1; i++) {
-    int current_length;
-    snprintf(buffer, sizeof(int) * 3 + 1, "%d", array->data[i]);
-    snprintf(string, watermark, "%s,", buffer);
-    current_length = strlen(buffer);
-    string += current_length + 1;
-    watermark -= current_length + 1;
-  }
-  if (array->size != 0) {
-    int current_length;
-    snprintf(buffer, sizeof(int) * 3 + 1, "%d", array->data[array->size - 1]);
-    snprintf(string, watermark, "%s", buffer);
-    current_length = strlen(buffer);
-    string += current_length;
-    watermark -= current_length;
-  }
-  snprintf(string, watermark, "]");
-
-  return start;
-}
-
 int maximum_depth(CloogLoop *loop, int start = 0) {
   if (loop == NULL)
     return start;

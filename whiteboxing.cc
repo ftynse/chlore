@@ -172,22 +172,6 @@ chlore_complementary_beta_transformation(std::vector<ChloreBetaTransformation> s
   return result;
 }
 
-
-// TODO: move to clay
-int clay_list_equal(clay_list_p l1, clay_list_p l2) {
-  int i;
-
-  if (l1->size != l2->size)
-    return 0;
-
-  for (i = 0; i < l1->size; i++) {
-    if (!clay_array_equal(l1->data[i], l2->data[i]))
-      return 0;
-  }
-
-  return 1;
-}
-
 template <typename Func, typename... Args>
 int chlore_try_transformation(osl_scop_p scop, Func transformation, Args... arguments) {
   osl_scop_p copy = osl_scop_clone(scop);
@@ -213,105 +197,6 @@ void vector_remove_duplicates(std::vector<T> &data) {
   for (auto it = to_remove.rbegin(), eit = to_remove.rend(); it != eit; it++) {
     data.erase(data.begin() + *it);
   }
-}
-
-
-// TODO: move to clay
-void clay_beta_find_relation(osl_statement_p start, clay_array_p beta,
-                             osl_statement_p *stmt, osl_relation_p *scattering) {
-  if (!stmt || !scattering)
-    return;
-
-  *stmt = NULL;
-  *scattering = NULL;
-
-  if (!start) {
-    return;
-  }
-
-  osl_relation_p scat;
-  *stmt = clay_beta_find(start, beta);
-  if (!stmt)
-    return;
-
-  for (scat = (*stmt)->scattering; scat != NULL; scat = scat->next) {
-    if (clay_beta_check_relation(scat, beta)) {
-      *scattering = scat;
-      return;
-    }
-  }
-}
-
-char *clay_array_string(clay_array_p array) {
-  size_t length = 3 + array->size * sizeof(int) * 4;
-  char *string = (char *) malloc(length);
-  char *start = string;
-  int i;
-  char buffer[sizeof(int) * 3 + 1];
-  int watermark = length;
-
-  snprintf(string, watermark, "[");
-  string += 1;
-  watermark -= 1;
-
-  for (i = 0; i < array->size - 1; i++) {
-    int current_length;
-    snprintf(buffer, sizeof(int) * 3 + 1, "%d", array->data[i]);
-    snprintf(string, watermark, "%s,", buffer);
-    current_length = strlen(buffer);
-    string += current_length + 1;
-    watermark -= current_length + 1;
-  }
-  if (array->size != 0) {
-    int current_length;
-    snprintf(buffer, sizeof(int) * 3 + 1, "%d", array->data[array->size - 1]);
-    snprintf(string, watermark, "%s", buffer);
-    current_length = strlen(buffer);
-    string += current_length;
-    watermark -= current_length;
-  }
-  snprintf(string, watermark, "]");
-
-  return start;
-}
-
-char *clay_list_string(clay_list_p list) {
-  char **array_strings = (char **) malloc(list->size * sizeof(char *));
-  int i;
-  int length = 0;
-  int watermark;
-  char *string;
-  char *start;
-
-  for (i = 0; i < list->size; i++) {
-    array_strings[i] = clay_array_string(list->data[i]);
-    length += strlen(array_strings[i]);
-  }
-
-  length += 2 + list->size;
-  string = (char *) malloc(length);
-  start = string;
-  watermark = length;
-
-  snprintf(string, watermark, "{");
-  string += 1;
-  watermark -= 1;
-  for (i = 0; i < list->size - 1; i++) {
-    int current_length = strlen(array_strings[i]);
-    snprintf(string, watermark, "%s,", array_strings[i]);
-    watermark -= current_length;
-    string += current_length;
-    free(array_strings[i]);
-  }
-  if (list->size != 0) {
-    int current_length = strlen(array_strings[list->size - 1]);
-    snprintf(string, watermark, "%s}", array_strings[list->size - 1]);
-    watermark -= current_length;
-    string += current_length;
-    free(array_strings[list->size - 1]);
-  }
-
-  return start;
 }
 
 void chlore_info_message(const char *message) {
