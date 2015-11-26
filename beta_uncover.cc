@@ -275,7 +275,7 @@ void chlore_debug_print_context(const std::map<std::vector<int>, std::set<int>> 
 #endif // NDEBUG
 }
 
-void scop_remove_adjacent_scalar_dimensions(osl_scop_p scop,
+void chlore_scop_remove_adjacent_scalar_dimensions(osl_scop_p scop,
                                             std::map<std::vector<int>, std::set<int>> &context) {
   std::map<osl_relation_p, std::vector<int>> pseudo_beta_mapping;
   bool has_adjacent = form_pseudo_beta_mapping(scop, context, pseudo_beta_mapping);
@@ -438,7 +438,7 @@ void scop_remove_adjacent_scalar_dimensions(osl_scop_p scop,
   }
 }
 
-void reintroduce_betas(osl_scop_p scop, const std::map<std::vector<int>, std::set<int>> &context) {
+void chlore_reintroduce_betas(osl_scop_p scop, const std::map<std::vector<int>, std::set<int>> &context) {
   CloogState *cloog_state = cloog_state_malloc();
   CloogOptions *cloog_options = cloog_options_malloc(cloog_state);
   cloog_options->f = -1;
@@ -499,6 +499,13 @@ int check_beta_uniqueness(osl_scop_p scop) {
   return 1;
 }
 
+void chlore_find_betas(osl_scop_p scop) {
+  std::map<std::vector<int>, std::set<int>> context;
+  chlore_scop_remove_adjacent_scalar_dimensions(scop, context);
+  chlore_reintroduce_betas(scop, context);
+  assert(check_beta_uniqueness(scop));
+}
+
 int main(int argc, char **argv) {
   if (argc != 2) {
     if (argc == 1) {
@@ -517,13 +524,7 @@ int main(int argc, char **argv) {
   if (!scop)
     return 3;
 
-  std::map<std::vector<int>, std::set<int>> context;
-
-  scop_remove_adjacent_scalar_dimensions(scop, context);
-
-  reintroduce_betas(scop, context);
-
-  assert(check_beta_uniqueness(scop));
+  chlore_find_betas(scop);
 
   osl_scop_print(stdout, scop);
   osl_scop_free(scop);
