@@ -176,7 +176,7 @@ template <typename Func, typename... Args>
 int chlore_try_transformation(osl_scop_p scop, Func transformation, Args... arguments) {
   osl_scop_p copy = osl_scop_clone(scop);
 
-  int result = transformation(scop, arguments...);
+  int result = transformation(copy, arguments...);
   int success = result == CLAY_SUCCESS;
   success = success && !osl_scop_equal(copy, scop);
   osl_scop_free(copy);
@@ -2622,118 +2622,6 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         continue;
       }
 
-#if 0
-      std::vector<std::tuple<ClayArray, int, int>> original_pseudo_sm =
-          lookup_pseudo_stripmine_consants(original, original_stmt);
-      std::vector<std::tuple<ClayArray, int, int>> transformed_pseudo_sm =
-          lookup_pseudo_stripmine_consants(transformed, transformed_stmt);
-
-      vector_pair_remove_identical_items(original_pseudo_sm, transformed_pseudo_sm);
-
-      for (auto const &data : original_pseudo_sm) {
-        ClayArray beta;
-        int depth;
-        int constant;
-        std::tie(beta, depth, constant) = data;
-        ClayArray parameters;
-
-        // TODO: check if the previous alpha is explicit
-        // and if it is, use it instead of first dimension and avoid interchange.
-        int explicit_dim = chlore_find_first_explicit(original_stmt, beta);
-
-        std::stringstream ss;
-
-        // TODO: check if explicit dim is not the last dim in the relation.
-//        if (depth != explicit_dim + 1) {
-//          ss << "interchange " << beta << " @" << explicit_dim + 1 << " with @" << depth << "\n";
-//          first.push_back(ss.str());
-//          ss.str("");
-//        }
-
-//        if (constant != 0) {
-//          ss << "shift " << beta << " @" << explicit_dim + 1 << " [] " << constant << "\n";
-//          first.push_back(ss.str());
-//          ss.str("");
-//        }
-
-//        ss << "skew " << beta << " @" << explicit_dim << " by 1x@" << explicit_dim + 1 << "\n";
-//        first.push_back(ss.str());
-//        ss.str("");
-
-//        ss << "linearize " << beta << " @" << explicit_dim << "\n";
-//        first.push_back(ss.str());
-//        ss.str("");
-
-//        if (depth != explicit_dim + 1) {
-//          clay_interchange(original, beta, explicit_dim + 1, depth, 0, options);
-//        }
-//        if (constant != 0) {
-
-//        }
-      }
-
-      for (auto const &data : transformed_pseudo_sm) {
-        ClayArray beta;
-        int depth;
-        int constant;
-        std::tie(beta, depth, constant) = data;
-        ClayArray parameters;
-
-        // If the next dim is explicit, no interchange, linearize current.
-        int explicit_dim = chlore_find_first_explicit(transformed_stmt, beta);
-        assert(explicit_dim != depth);
-
-        std::stringstream ss;
-        int target_depth;
-        if (explicit_dim < depth) {
-          int current = depth;
-          while (current != explicit_dim) {
-            ss << "interchange " << beta << " @" << depth - current + explicit_dim
-               << " with @" << depth - (current - 1) + explicit_dim << "\n";
-            last.push_front(ss.str());
-            ss.str("");
-            clay_interchange(transformed, beta, current, current - 1, 0, options);
-            --current;
-          }
-          target_depth = explicit_dim;
-        } else {
-          int current = depth;
-          while (current + 1 != explicit_dim) {
-            ss << "interchange " << beta << " @" << (depth + explicit_dim - 1 - current)
-               << " with @" << (depth + explicit_dim - 2 - current) << "\n";
-            last.push_front(ss.str());
-            ss.str("");
-            clay_interchange(transformed, beta, current, current + 1, 0, options);
-            ++current;
-          }
-          target_depth = explicit_dim - 1;
-        }
-//        ss << "interchange " << beta << " @" << explicit_dim << " with @" << depth << "\n";
-//        last.push_front(ss.str());
-//        ss.str("");
-
-        if (constant != 0) {
-          ss << "shift " << beta << " @" << target_depth << " [] " << -constant << "\n";
-          last.push_front(ss.str());
-          ss.str("");
-        }
-
-        ss << "skew " << beta << " @" << target_depth << " by " << "1x@" << target_depth + 1 << "\n";
-        last.push_front(ss.str());
-        ss.str("");
-
-        ss << "stripmine " << beta << " @" << target_depth << " 1\n";
-        last.push_front(ss.str());
-        ss.str("");
-
-        if (constant != 0) {
-          clay_shift(transformed, beta, target_depth, parameters, -constant, options);
-        }
-        clay_skew(transformed, beta, target_depth, target_depth + 1, -1, options);
-        clay_linearize(transformed, beta, target_depth, options);
-      }
-#endif
-
 
       // Check for grain/densify
       std::vector<std::tuple<ClayArray, int, int>> original_grains =
@@ -3013,6 +2901,7 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
            << input << ", " << -coefficient << ");\n";
         last.push_front(ss.str());
 
+        clay_reshape(transformed, beta, dim, input, coefficient, options);
         continue;
       }
 
