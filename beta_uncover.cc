@@ -506,6 +506,7 @@ void chlore_find_betas(osl_scop_p scop) {
   assert(check_beta_uniqueness(scop));
 }
 
+#if 0
 int main(int argc, char **argv) {
   if (argc != 2) {
     if (argc == 1) {
@@ -531,4 +532,4 @@ int main(int argc, char **argv) {
 
   return 0;
 }
-
+#endif

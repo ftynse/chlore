@@ -1,3 +1,4 @@
+project(chlore)
 cmake_minimum_required(VERSION 2.8)
 
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH true)
@@ -29,11 +30,10 @@ include_directories(${CLOOG_ISL_INCLUDE_DIR})
 #     sources
 #     ${CMAKE_CURRENT_SOURCE_DIR}/*)
 add_executable(chlore "${CMAKE_CURRENT_SOURCE_DIR}/whiteboxing.cc"
-                      "${CMAKE_CURRENT_SOURCE_DIR}/tree.cc")
+                      "${CMAKE_CURRENT_SOURCE_DIR}/tree.cc"
+                      "${CMAKE_CURRENT_SOURCE_DIR}/beta_uncover.cc"
+                      "${CMAKE_CURRENT_SOURCE_DIR}/chlore.cc")
 target_link_libraries(chlore ${OSL_LIBRARY})
 target_link_libraries(chlore ${CLAY_LIBRARY})
+target_link_libraries(chlore ${CLOOG_ISL_LIBRARY})
 
-add_executable(beta_uncover "${CMAKE_CURRENT_SOURCE_DIR}/beta_uncover.cc")
-target_link_libraries(beta_uncover ${OSL_LIBRARY})
-target_link_libraries(beta_uncover ${CLAY_LIBRARY})
-target_link_libraries(beta_uncover ${CLOOG_ISL_LIBRARY})

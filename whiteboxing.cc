@@ -2400,7 +2400,7 @@ void chlore_add_inverted_commands(std::deque<std::string> &last,
   transformed_commands.clear();
 }
 
-void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
+std::string chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
   osl_statement_p stmt, original_stmt, transformed_stmt;
   int nb_stmts = 0;
   int i;
@@ -2963,21 +2963,23 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
   // The only difference is in their beta-vectors, which may be fixed by split/fuse/reorder.
   if (!chlore_check_structure_compatible(original, transformed)) {
     fprintf(stderr, "Failed to recover alpha dimensions\n");
-    return;
+    return "<failed>";
   }
 
   std::vector<ChloreBetaTransformation> commands;
   chlore_match_betas(original, transformed, commands, options);
 
+  std::stringstream ss;
   for (const std::string &s : first) {
-    std::cout << s;
+    ss << s;
   }
   for (const ChloreBetaTransformation &transformation : commands) {
-    std::cout << transformation;
+    ss << transformation;
   }
   for (const std::string &s : last) {
-    std::cout << s;
+    ss << s;
   }
+  return ss.str();
 }
 
 void chlore_relation_replace_extra_dimensions(osl_relation_p relation) {
@@ -3041,6 +3043,7 @@ void chlore_scop_replace_extra_dimensions(osl_scop_p scop) {
   }
 }
 
+#if 0
 void chlore_usage(const char *name) {
   fprintf(stderr, "%s <original.scop> <transformed.scop>\n", name);
 }
@@ -3084,5 +3087,5 @@ int main(int argc, char **argv) {
 
   return 0;
 }
-
+#endif
 
