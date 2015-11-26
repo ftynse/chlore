@@ -112,17 +112,17 @@ struct ChloreBetaTransformation {
 std::ostream &operator <<(std::ostream &out, const ChloreBetaTransformation &transformation) {
   switch (transformation.kind) {
   case ChloreBetaTransformation::FUSE:
-    out << "fuse " << transformation.target;
+    out << "fuse(" << transformation.target;
     break;
 
   case ChloreBetaTransformation::SPLIT:
-    out << "split " << transformation.target << " @" << transformation.depth;
+    out << "split(" << transformation.target << ", " << transformation.depth;
     break;
 
   case ChloreBetaTransformation::REORDER:
-    out << "reorder " << transformation.target << " " << transformation.order;
+    out << "reorder(" << transformation.target << ", " << transformation.order;
   }
-  out << "\n";
+  out << ");\n";
   return out;
 }
 
@@ -2436,7 +2436,7 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         ClayArray beta = static_cast<ClayArray>(transformed_embed);
 
         std::stringstream ss;
-        ss << "unembed " << beta << "\n";
+        ss << "unembed(" << beta << ");\n";
         first.push_back(ss.str());
 
         clay_unembed(original, beta, options);
@@ -2450,7 +2450,7 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         chlore_add_inverted_commands(last, transformed_commands);
 
         std::stringstream ss;
-        ss << "embed " << beta << "\n";
+        ss << "embed(" << beta << ");\n";
         last.push_front(ss.str());
 
         cbeta->size += 1;
@@ -2479,7 +2479,7 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         chlore_add_commands(first, original_commands);
 
         std::stringstream ss;
-        ss << "collapse " << beta << "\n";
+        ss << "collapse(" << beta << ");\n";
         first.push_back(ss.str());
 
         clay_collapse(original, beta, options);
@@ -2496,7 +2496,7 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         chlore_add_inverted_commands(last, transformed_commands);
 
         std::stringstream ss;
-        ss << "iss " << beta << " " << condition << "\n";
+        ss << "iss(" << beta << ", " << condition << ");\n";
         last.push_front(ss.str());
         clay_collapse(transformed, beta, options);
       }
@@ -2523,7 +2523,7 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         std::tie(beta, depth, std::ignore) = data;
 
         std::stringstream ss;
-        ss << "linearize " << beta << " @" << depth << "\n";
+        ss << "linearize(" << beta << ", " << depth << ");\n";
         first.push_back(ss.str());
 
         clay_linearize(original, beta, depth, options);
@@ -2536,7 +2536,7 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         std::tie(beta, depth, size) = data;
 
         std::stringstream ss;
-        ss << "stripmine " << beta << " @" << depth << " " << size << "\n";
+        ss << "stripmine(" << beta << ", " << depth << ", " << size << ");\n";
         last.push_front(ss.str());
 
         clay_linearize(transformed, beta, depth, options);
@@ -2574,8 +2574,8 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         if (explicit_dim < depth) {
           int current = depth;
           while (current != explicit_dim) {
-            ss << "interchange " << beta << " @" << depth - current + explicit_dim
-               << " with @" << depth - (current - 1) + explicit_dim << "\n";
+            ss << "interchange(" << beta << ", " << depth - current + explicit_dim
+               << ", " << depth - (current - 1) + explicit_dim << ", 0);\n";
             last.push_front(ss.str());
             ss.str("");
             clay_interchange(transformed, beta, current, current - 1, 0, options);
@@ -2585,8 +2585,8 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         } else {
           int current = depth;
           while (current + 1 != explicit_dim) {
-            ss << "interchange " << beta << " @" << (depth + explicit_dim - 1 - current)
-               << " with @" << (depth + explicit_dim - 2 - current) << "\n";
+            ss << "interchange(" << beta << ", " << (depth + explicit_dim - 1 - current)
+               << ", " << (depth + explicit_dim - 2 - current) << ", 0);\n";
             last.push_front(ss.str());
             ss.str("");
             clay_interchange(transformed, beta, current, current + 1, 0, options);
@@ -2595,11 +2595,11 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
           target_depth = explicit_dim - 1;
         }
 
-        ss << "skew " << beta << " @" << target_depth << " by " << "1x@" << target_depth + 1 << "\n";
+        ss << "skew(" << beta << ", " << target_depth << ", " << target_depth + 1 << ", 1);\n";
         last.push_front(ss.str());
         ss.str("");
 
-        ss << "stripmine " << beta << " @" << target_depth << " 1\n";
+        ss << "stripmine(" << beta << ", " << target_depth << ", 1);\n";
         last.push_front(ss.str());
         ss.str("");
 
@@ -2749,7 +2749,7 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         std::tie(beta, depth, std::ignore) = data;
 
         std::stringstream ss;
-        ss << "densify " << beta << " @" << depth << "\n";
+        ss << "densify(" << beta << ", " << depth << ");\n";
         first.push_back(ss.str());
 
         clay_densify(original, beta, depth, options);
@@ -2762,7 +2762,7 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         std::tie(beta, depth, size) = data;
 
         std::stringstream ss;
-        ss << "grain " << beta << " @" << depth << " " << size << "\n";
+        ss << "grain(" << beta << ", " << depth << ", " << size << ");\n";
         last.push_front(ss.str());
 
         clay_densify(transformed, beta, depth, options);
@@ -2793,8 +2793,8 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
 //        constant = -constant;
 
         std::stringstream ss;
-        ss << "shift " << beta << " @" << depth << " "
-           << parameters << " " << constant << "\n";
+        ss << "shift(" << beta << ", " << depth << ", "
+           << parameters << ", " << constant << ");\n";
         first.push_back(ss.str());
 
         clay_shift(original, beta, depth, parameters, constant, options);
@@ -2810,8 +2810,8 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         std::tie(beta, depth, parameters, constant) = potential_shift;
 
         std::stringstream ss;
-        ss << "shift " << beta << " @" << depth << " "
-           << parameters << " " << constant << "\n";
+        ss << "shift(" << beta << ", " << depth << ", "
+           << parameters << ", " << constant << ");\n";
         last.push_front(ss.str());
 
         // Negate everything.
@@ -2837,7 +2837,7 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         std::tie(beta, std::ignore, std::ignore, depth_1, depth_2) = potential_skew;
 
         std::stringstream ss;
-        ss << "interchange " << beta << " @" << depth_1 << " with @" << depth_2 << "\n";
+        ss << "interchange(" << beta << ", " << depth_1 << ", " << depth_2 << ", 0);\n";
         first.push_back(ss.str());
 
         clay_interchange(original, beta, depth_1, depth_2, 0, options);
@@ -2854,30 +2854,30 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
 
         // TODO: use skew with non-one parameter instead of this.
         if (source_grain > 1) {
-          ss << "grain " << beta << " @" << source << " " << source_grain << "\n";
+          ss << "grain(" << beta << ", " << source << ", " << source_grain << ");\n";
           clay_grain(original, beta, source, source_grain, options);
         } else if (source_grain < 0) {
           source_grain = -source_grain;
-          ss << "reverse " << beta << " @" << source << "\n";
-          ss << "grain " << beta << " @" << source << " " << source_grain << "\n";
+          ss << "reverse(" << beta << ", " << source << ");\n";
+          ss << "grain(" << beta << ", " << source << ", " << source_grain << ");\n";
           clay_reverse(original, beta, source, options);
           clay_grain(original, beta, source, source_grain, options);
         }
 
         if (target_grain > 1) {
-          ss << "grain " << beta << " @" << target << " " << target_grain << "\n";
+          ss << "grain(" << beta << ", " << target << ", " << target_grain << ");\n";
           clay_grain(original, beta, target, target_grain, options);
         } else if (target_grain < 0) {
           target_grain = -target_grain;
-          ss << "reverse " << beta << " @" << target << "\n";
+          ss << "reverse(" << beta << ", " << target << ");\n";
           clay_reverse(original, beta, target, options);
           if (target_grain != 1) {
-            ss << "grain " << beta << " @" << target << " " << target_grain << "\n";
+            ss << "grain(" << beta << ", " << target << ", " << target_grain << ");\n";
             clay_grain(original, beta, target, target_grain, options);
           }
         }
 
-        ss << "skew " << beta << " @" << source << " by 1x@" << target << "\n";
+        ss << "skew(" << beta << ", " << source << ", " << target << ", 1);\n";
         clay_skew(original, beta, target, source, 1, options);
 
         osl_statement_p unused_statement;
@@ -2896,7 +2896,7 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         std::tie(beta, std::ignore, std::ignore, depth_1, depth_2) = potential_skew;
 
         std::stringstream ss;
-        ss << "interchange " << beta << " @" << depth_1 << " with @" << depth_2 << "\n";
+        ss << "interchange(" << beta << ", " << depth_1 << ", " << depth_2 << ", 0);\n";
         last.push_front(ss.str());
 
         clay_interchange(transformed, beta, depth_1, depth_2, 0, options);
@@ -2912,30 +2912,30 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         std::stringstream ss;
 
         if (source_grain > 1) {
-          ss << "grain " << beta << " @" << source << " " << source_grain << "\n";
+          ss << "grain(" << beta << ", " << source << ", " << source_grain << ");\n";
           clay_grain(transformed, beta, source, source_grain, options);
         } else if (source_grain < 0) {
           source_grain = -source_grain;
-          ss << "reverse " << beta << " @" << source << "\n";
-          ss << "grain " << beta << " @" << source << " " << source_grain << "\n";
+          ss << "reverse(" << beta << ", " << source << ");\n";
+          ss << "grain(" << beta << ", " << source << ", " << source_grain << ");\n";
           clay_reverse(transformed, beta, source, options);
           clay_grain(transformed, beta, source, source_grain, options);
         }
 
         if (target_grain > 1) {
-          ss << "grain " << beta << " @" << target << " " << target_grain << "\n";
+          ss << "grain(" << beta << ", " << target << ", " << target_grain << ");\n";
           clay_grain(transformed, beta, target, target_grain, options);
         } else if (target_grain < 0) {
           target_grain = -target_grain;
-          ss << "reverse " << beta << " @" << target << "\n";
+          ss << "reverse(" << beta << ", " << target << ");\n";
           clay_reverse(transformed, beta, target, options);
           if (target_grain != 1) {
-            ss << "grain " << beta << " @" << target << " " << target_grain << "\n";
+            ss << "grain(" << beta << ", " << target << ", " << target_grain << ");\n";
             clay_grain(transformed, beta, target, target_grain, options);
           }
         }
 
-        ss << "skew " << beta << " @" << source << " by -1x@" << target << "\n";
+        ss << "skew(" << beta << ", " << source << ", " << target << ", -1);\n";
         clay_skew(transformed, beta, source, target, 1, options);
         clay_relation_normalize_alpha(transformed_stmt->scattering);
 
@@ -2956,8 +2956,8 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         std::tie(beta, source, target, coefficient) = potential_iskew;
 
         std::stringstream ss;
-        ss << "skew " << beta << " @" << source << " by "
-           << coefficient << "x@" << target << "\n";
+        ss << "skew(" << beta << ", " << source << ", "
+           << target << ", " << coefficient << ");\n";
         first.push_back(ss.str());
 
         clay_skew(original, beta, source, target, coefficient, options);
@@ -2971,8 +2971,8 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         std::tie(beta, source, target, coefficient) = potential_iskew;
 
         std::stringstream ss;
-        ss << "skew " << beta << " @" << source << " by "
-           << -coefficient << "x@" << target << "\n";
+        ss << "skew(" << beta << ", " << source << ", "
+           << target << ", " << -coefficient << ");\n";
         last.push_front(ss.str());
 
         clay_skew(transformed, beta, source, target, coefficient, options);
@@ -2992,8 +2992,8 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         chlore_add_commands(first, original_commands);
 
         std::stringstream ss;
-        ss << "reshape " << beta << " @" << dim << " by "
-           << -coefficient << "x@" << input << "\n";
+        ss << "reshape(" << beta << ", " << dim << ", "
+           << input << ", " << coefficient << ");\n";
         first.push_back(ss.str());
 
         clay_reshape(original, beta, dim, input, -coefficient, options);
@@ -3009,8 +3009,8 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         chlore_add_inverted_commands(last, transformed_commands);
 
         std::stringstream ss;
-        ss << "reshape " << beta << " @" << dim << " by "
-           << coefficient << "x@" << input << "\n";
+        ss << "reshape(" << beta << ", " << dim << ", "
+           << input << ", " << -coefficient << ");\n";
         last.push_front(ss.str());
 
         continue;
@@ -3029,12 +3029,12 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         std::stringstream ss;
 
         if (amount < 0) {
-          ss << "reverse " << beta << " @" << dim << "\n";
+          ss << "reverse(" << beta << ", " << dim << ");\n";
 
           clay_reverse(original, beta, dim, options);
           amount = -amount;
         }
-        ss << "densify " << beta << " @" << dim << "\n";
+        ss << "densify(" << beta << ", " << dim << ");\n";
 
         clay_densify(original, beta, dim, options);
         continue;
@@ -3050,12 +3050,12 @@ void chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         std::stringstream ss;
 
         if (amount < 0) {
-          ss << "reverse " << beta << " @" << dim << "\n";
+          ss << "reverse(" << beta << ", " << dim << ");\n";
 
           clay_reverse(transformed, beta, dim, options);
           amount = -amount;
         }
-        ss << "grain " << beta << " @" << dim << " " << amount << "\n";
+        ss << "grain(" << beta << ", " << dim << ", " << amount << ");\n";
 
         clay_densify(transformed, beta, dim, options);
         continue;
