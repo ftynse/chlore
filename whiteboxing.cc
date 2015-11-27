@@ -1149,7 +1149,6 @@ clay_list_p chlore_extract_iss_line(osl_scop_p scop, clay_list_p found_betas, cl
     }
   }
   if (error) {
-    fprintf(stderr, "%d # ", error);
     clay_list_free(found_betas);
     clay_array_free(row_indices);
     clay_list_free(result);
@@ -2176,10 +2175,6 @@ static clay_array_p chlore_find_first_split_away(
 
       if (clay_beta_check_relation(original_rel, prefix)) {
         if (!clay_beta_check_relation(transformed_rel, prefix)) {
-          fprintf(stderr, "? %d %d ", i, j);
-          clay_array_print(stderr, prefix, 0);
-          clay_array_print(stderr, clay_beta_extract(original_rel), 0);
-          clay_array_print(stderr, clay_beta_extract(transformed_rel), 1);
           return clay_beta_extract(original_rel);
         }
       }
