@@ -69,18 +69,35 @@ void postprocess_mapping(std::map<int, ClayArray> &mapping, osl_scop_p scop,
     int initial_size = beta->size;
     osl_relation_p scattering = stmt->scattering;
 
-
     std::vector<std::pair<int, int>> contextualized_scalars = scalar_dimensions(scattering, context);
-    int current_extra_dims = beta->size - (scattering->nb_output_dims - contextualized_scalars.size() + 2);
+    int current_extra_dims = beta->size - ((scattering->nb_output_dims - contextualized_scalars.size()) + 1);
 
-    beta->size -= current_extra_dims + 1;
-    int updated = beta->data[initial_size - 1] + beta->data[beta->size - 1];
+    beta->size -= current_extra_dims;
+
+    int sum = 0;
+    for (int i = beta->size; i < initial_size; i++)
+      sum += beta->data[i];
+
+    int updated = beta->data[beta->size - 1] + sum;
 
     for (auto &it2 : mapping) {
       clay_array_p current = static_cast<clay_array_p>(it2.second);
-      if (current->size >= beta->size &&
-          current->data[beta->size - 1] >= updated) {
-        current->data[beta->size - 1] += beta->data[initial_size - 1];
+      if (current->size >= beta->size) {
+        clay_array_p reduced = clay_array_clone(current);
+        reduced->size = beta->size;
+        bool prefix = true;
+        for (int i = 0; i < beta->size - 1; i++) {
+          if (reduced->data[i] != beta->data[i]) {
+            prefix = false;
+            break;
+          }
+        }
+        if (!prefix)
+          continue;
+        if (updated <= reduced->data[beta->size - 1]) {
+          current->data[beta->size - 1] += 1;
+        }
+        clay_array_free(reduced);
       }
     }
 
@@ -192,6 +209,11 @@ void replace_beta(osl_relation_p relation, clay_array_p beta,
       clay_array_add(beta, 0);
     }
   }
+
+  std::sort(std::begin(scalar_dims), std::end(scalar_dims),
+            [](const std::pair<int, int> &a, const std::pair<int, int> &b) {
+    return a.first < b.first;
+  });
 
   for (int i = 0; i < beta->size; i++) {
     int current_dimension = 2 * i;
