@@ -34,6 +34,8 @@ static chlore_options chlore_parse_options(int &argc, char **&argv) {
       options.normalize_transformed = true;
     } else if (strcmp(argv[i], "--output-extension") == 0) {
       options.output_extension = true;
+    } else {
+      continue;
     }
     for (int j = i + 1; j < argc; j++) {
       argv[j - 1] = argv[j];
@@ -64,6 +66,13 @@ int main(int argc, char **argv) {
     return 0;
   }
 
+  chlore_options options = chlore_parse_options(argc, argv);
+
+  if (argc != 3) {
+    chlore_usage(argv[0]);
+    return 1;
+  }
+
   FILE *f1 = fopen(argv[1], "r");
   FILE *f2 = fopen(argv[2], "r");
 
@@ -89,8 +98,6 @@ int main(int argc, char **argv) {
     fprintf(stderr, "Can't read the transformed SCoP from file %s\n", argv[2]);
     return -4;
   }
-
-  chlore_options options = chlore_parse_options(argc, argv);
 
   if (options.normalize_original) {
     chlore_find_betas(original);
