@@ -58,3 +58,12 @@ install(TARGETS libchlore LIBRARY DESTINATION lib)
 install(TARGETS libchlorea ARCHIVE DESTINATION lib)
 install(DIRECTORY include/ DESTINATION include FILES_MATCHING PATTERN "*.h")
 install(FILES chlore-config.cmake DESTINATION lib/chlore)
+
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake-uninstall.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/cmake-uninstall.cmake"
+    IMMEDIATE @ONLY)
+
+add_custom_target(uninstall
+    COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_BINARY_DIR}/cmake-uninstall.cmake)
+
