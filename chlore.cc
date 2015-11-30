@@ -1,4 +1,4 @@
-#include "chlore.h"
+#include <chlore/chlore.h>
 
 #include <osl/scop.h>
 #include <osl/extensions/clay.h>
