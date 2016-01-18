@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <assert.h>
 
+#include <chlore/chlore.h>
 #include "beta.h"
 #include "osl_wrapper.h"
 
@@ -1265,6 +1266,32 @@ void vector_pair_remove_identical_items(std::vector<T> &v1, std::vector<T> &v2) 
   }
 }
 
+static void chlore_negate_condition(clay_list_p condition) {
+  assert(condition->size == 4);
+  for (int i = 0; i < 3; i++) {
+    for (int j = 0; j < condition->data[i]->size; j++) {
+      condition->data[i]->data[j] = -condition->data[i]->data[j];
+    }
+  }
+  condition->data[3]->data[0] = -condition->data[3]->data[0] - 1;
+}
+
+clay_list_p chlore_extract_iss_condition(osl_scop_p scop, clay_array_p beta) {
+  clay_list_p found_betas = clay_list_malloc();
+  clay_array_p row_indices = clay_array_malloc();
+  clay_list_p condition = NULL;
+
+  if (chlore_collapsing_lines(scop, beta, found_betas, row_indices) == CLAY_SUCCESS) {
+    condition = chlore_extract_iss_line(scop, found_betas, row_indices);
+    assert(condition);
+    chlore_negate_condition(condition);
+  }
+  clay_list_free(found_betas);
+  clay_array_free(row_indices);
+
+  return condition;
+}
+
 optional<std::tuple<ClayArray, ClayList>>
 lookup_iss_conditions(osl_scop_p scop, osl_statement_p statement,
                       std::vector<ChloreBetaTransformation> &commands, clay_options_p options) {
@@ -1276,14 +1303,8 @@ lookup_iss_conditions(osl_scop_p scop, osl_statement_p statement,
   clay_list_p condition = chlore_extract_iss_line(scop, found_betas, row_indices);
 
   if (condition) {
-    assert(condition->size == 4);
     // Negate condition because lexicographically first beta after iss in clay has a negated condition.
-    for (int i = 0; i < 3; i++) {
-      for (int j = 0; j < condition->data[i]->size; j++) {
-        condition->data[i]->data[j] = -condition->data[i]->data[j];
-      }
-    }
-    condition->data[3]->data[0] = -condition->data[3]->data[0] - 1;
+    chlore_negate_condition(condition);
   }
 
   clay_list_free(found_betas);
@@ -2024,6 +2045,10 @@ int chlore_unembeddable(osl_scop_p scop, clay_array_p beta) {
   }
 
   return CLAY_SUCCESS;
+}
+
+int chlore_extract_embed(osl_scop_p scop, clay_array_p beta) {
+  return chlore_unembeddable(scop, beta) == CLAY_SUCCESS;
 }
 
 optional<ClayArray>
@@ -3038,49 +3063,17 @@ void chlore_scop_replace_extra_dimensions(osl_scop_p scop) {
   }
 }
 
-#if 0
-void chlore_usage(const char *name) {
-  fprintf(stderr, "%s <original.scop> <transformed.scop>\n", name);
-}
-
-int main(int argc, char **argv) {
-  osl_scop_p original, transformed;
-
-  if (argc != 3) {
-    chlore_usage(argv[0]);
-    return 0;
-  }
-
-  FILE *f1 = fopen(argv[1], "r");
-  FILE *f2 = fopen(argv[2], "r");
-
-  if (!f1) {
-    fprintf(stderr, "Can't open the original file %s\n", argv[1]);
-    return -1;
-  }
-  if (!f2) {
-    fprintf(stderr, "Can't open the transformed file %s\n", argv[2]);
-    fclose(f1);
-    return -2;
-  }
-  original = osl_scop_read(f1);
-  transformed = osl_scop_read(f2);
-  fclose(f1);
-  fclose(f2);
-
-  if (!original) {
-    fprintf(stderr, "Can't read the original SCoP from file %s\n", argv[1]);
-    return -3;
-  }
-  if (!transformed) {
-    fprintf(stderr, "Can't read the transformed SCoP from file %s\n", argv[2]);
-    return -4;
-  }
-
+void chlore_whiteboxing(osl_scop_p original, osl_scop_p transformed) {
+  chlore_find_betas(original);
+  chlore_scop_replace_extra_dimensions(original);
+  chlore_find_betas(transformed);
   chlore_scop_replace_extra_dimensions(transformed);
-  chlore_find_sequence(original, transformed);
-
-  return 0;
+  std::string sequence = chlore_find_sequence(original, transformed);
+  osl_clay_p extension = osl_clay_malloc();
+  extension->script = strdup(sequence.c_str());
+  if (osl_generic_lookup(original->extension, OSL_URI_CLAY)) {
+    osl_generic_remove(&original->extension, OSL_URI_CLAY);
+  }
+  osl_generic_add(&original->extension,
+                  osl_generic_shell(extension, osl_clay_interface()));
 }
-#endif
-
