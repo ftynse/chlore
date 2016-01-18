@@ -8,8 +8,10 @@
 
 #include <string>
 
-int chlore_densifiable(osl_scop_p scop, clay_array_p beta, int depth,
-                       clay_list_p found_betas, clay_array_p grains);
+int         chlore_extract_stripmine_size(osl_scop_p scop, clay_array_p beta, int depth);
+int         chlore_extract_grain(osl_scop_p scop, clay_array_p beta, int depth);
+clay_list_p chlore_extract_iss_condition(osl_scop_p scop, clay_array_p beta);
+int         chlore_extract_embed(osl_scop_p scop, clay_array_p beta);
 
 void chlore_scop_replace_extra_dimensions(osl_scop_p scop);
 std::string chlore_find_sequence(osl_scop_p original, osl_scop_p transformed);
