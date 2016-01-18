@@ -2820,25 +2820,27 @@ std::string chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         std::stringstream ss;
 
         if (source_grain > 1) {
-          ss << "grain(" << beta << ", " << source << ", " << source_grain << ");\n";
+          ss << "densify(" << beta << ", " << source << ");\n";
           clay_grain(transformed, beta, source, source_grain, options);
         } else if (source_grain < 0) {
           source_grain = -source_grain;
           ss << "reverse(" << beta << ", " << source << ");\n";
-          ss << "grain(" << beta << ", " << source << ", " << source_grain << ");\n";
           clay_reverse(transformed, beta, source, options);
-          clay_grain(transformed, beta, source, source_grain, options);
+          if (source_grain != 1) {
+            ss << "densify(" << beta << ", " << source << ");\n";
+            clay_grain(transformed, beta, source, source_grain, options);
+          }
         }
 
         if (target_grain > 1) {
-          ss << "grain(" << beta << ", " << target << ", " << target_grain << ");\n";
+          ss << "densify(" << beta << ", " << target << ");\n";
           clay_grain(transformed, beta, target, target_grain, options);
         } else if (target_grain < 0) {
           target_grain = -target_grain;
           ss << "reverse(" << beta << ", " << target << ");\n";
           clay_reverse(transformed, beta, target, options);
           if (target_grain != 1) {
-            ss << "grain(" << beta << ", " << target << ", " << target_grain << ");\n";
+            ss << "densify(" << beta << ", " << target << ");\n";
             clay_grain(transformed, beta, target, target_grain, options);
           }
         }
