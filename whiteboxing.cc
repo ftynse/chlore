@@ -3079,11 +3079,18 @@ void chlore_scop_replace_extra_dimensions(osl_scop_p scop) {
 }
 
 void chlore_whiteboxing(osl_scop_p original, osl_scop_p transformed) {
-  chlore_find_betas(original);
-  chlore_scop_replace_extra_dimensions(original);
-  chlore_find_betas(transformed);
-  chlore_scop_replace_extra_dimensions(transformed);
-  std::string sequence = chlore_find_sequence(original, transformed);
+  // Copy SCoPs to allow modification by the following functions.
+  osl_scop_p originalLocalCopy = osl_scop_clone(original);
+  osl_scop_p transformedLocalCopy = osl_scop_clone(transformed);
+
+  chlore_find_betas(originalLocalCopy);
+  chlore_scop_replace_extra_dimensions(originalLocalCopy);
+  chlore_find_betas(transformedLocalCopy);
+  chlore_scop_replace_extra_dimensions(transformedLocalCopy);
+  std::string sequence = chlore_find_sequence(originalLocalCopy,
+                                              transformedLocalCopy);
+
+  // Modify the original scop.
   osl_clay_p extension = osl_clay_malloc();
   extension->script = strdup(sequence.c_str());
   if (osl_generic_lookup(original->extension, OSL_URI_CLAY)) {
