@@ -2821,31 +2821,45 @@ std::string chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
 
         if (source_grain > 1) {
           ss << "densify(" << beta << ", " << source << ");\n";
+          last.push_front(ss.str());
+          ss.str("");
           clay_grain(transformed, beta, source, source_grain, options);
         } else if (source_grain < 0) {
           source_grain = -source_grain;
           ss << "reverse(" << beta << ", " << source << ");\n";
+          last.push_front(ss.str());
+          ss.str("");
           clay_reverse(transformed, beta, source, options);
           if (source_grain != 1) {
             ss << "densify(" << beta << ", " << source << ");\n";
+            last.push_front(ss.str());
+            ss.str("");
             clay_grain(transformed, beta, source, source_grain, options);
           }
         }
 
         if (target_grain > 1) {
           ss << "densify(" << beta << ", " << target << ");\n";
+          last.push_front(ss.str());
+          ss.str("");
           clay_grain(transformed, beta, target, target_grain, options);
         } else if (target_grain < 0) {
           target_grain = -target_grain;
           ss << "reverse(" << beta << ", " << target << ");\n";
+          last.push_front(ss.str());
+          ss.str("");
           clay_reverse(transformed, beta, target, options);
           if (target_grain != 1) {
             ss << "densify(" << beta << ", " << target << ");\n";
+            last.push_front(ss.str());
+            ss.str("");
             clay_grain(transformed, beta, target, target_grain, options);
           }
         }
 
         ss << "skew(" << beta << ", " << source << ", " << target << ", -1);\n";
+        last.push_front(ss.str());
+        ss.str("");
         clay_skew(transformed, beta, source, target, 1, options);
         clay_relation_normalize_alpha(transformed_stmt->scattering);
 
@@ -2853,7 +2867,6 @@ std::string chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         osl_relation_p scattering;
         clay_beta_find_relation(transformed_stmt, beta, &unused_statement, &scattering);
         clay_relation_normalize_alpha(scattering);
-        last.push_front(ss.str());
         continue;
       }
 
