@@ -21,6 +21,7 @@ include_directories(${CLAY_INCLUDE_DIR})
 include_directories(${CLOOG_ISL_INCLUDE_DIR})
 
 set(library_files "${CMAKE_CURRENT_SOURCE_DIR}/whiteboxing.cc"
+                  "${CMAKE_CURRENT_SOURCE_DIR}/beta.cc"
                   "${CMAKE_CURRENT_SOURCE_DIR}/beta_uncover.cc")
 
 file(GLOB include_files "include/*.h")
