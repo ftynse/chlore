@@ -2431,7 +2431,7 @@ std::string chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
   options->normalize = 1;
 
   if (!chlore_check_compatible(original, transformed)) {
-    fprintf(stderr, "NO SEQUENCE\n");
+    fprintf(stderr, "[chlore] Domains not compatible (extra empty dimensions)\n");
   }
 
   clay_scop_normalize(original);
@@ -2961,6 +2961,7 @@ std::string chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         ss << "densify(" << beta << ", " << dim << ");\n";
 
         clay_densify(original, beta, dim, options);
+        first.push_back(ss.str());
         continue;
       }
 
@@ -2982,6 +2983,7 @@ std::string chlore_find_sequence(osl_scop_p original, osl_scop_p transformed) {
         ss << "grain(" << beta << ", " << dim << ", " << amount << ");\n";
 
         clay_densify(transformed, beta, dim, options);
+        last.push_front(ss.str());
         continue;
       }
 
@@ -3094,7 +3096,7 @@ void chlore_whiteboxing(osl_scop_p original, osl_scop_p transformed) {
   osl_clay_p extension = osl_clay_malloc();
   extension->script = strdup(sequence.c_str());
   if (osl_generic_lookup(original->extension, OSL_URI_CLAY)) {
-    osl_generic_remove(&original->extension, OSL_URI_CLAY);
+    osl_generic_remove(&original->extension, (char *) OSL_URI_CLAY);
   }
   osl_generic_add(&original->extension,
                   osl_generic_shell(extension, osl_clay_interface()));
