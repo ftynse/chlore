@@ -3,12 +3,12 @@ cmake_minimum_required(VERSION 3.0)
 
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH true)
 
-set(CMAKE_C_FLAGS_DEBUG "-g -Wall -Wextra -pedantic -O0 -std=c99")
-set(CMAKE_CXX_FLAGS_DEBUG "-g -Wall -Wextra -pedantic -O0 -std=c++11")
-set(CMAKE_C_FLAGS_RELEASE "-Wall -Wextra -O3 -std=c99")
-set(CMAKE_CXX_FLAGS_RELEASE "-Wall -Wextra -O3 -std=c++11")
-set(CMAKE_C_FLAGS "-Wall -Wextra -std=c99")
-set(CMAKE_CXX_FLAGS "-Wall -Wextra -std=c++11")
+set(CMAKE_C_FLAGS_DEBUG "-g -Wall -Wextra -pedantic -O0 -std=c99 -fPIC")
+set(CMAKE_CXX_FLAGS_DEBUG "-g -Wall -Wextra -pedantic -O0 -std=c++11 -fPIC")
+set(CMAKE_C_FLAGS_RELEASE "-Wall -Wextra -O3 -std=c99 -fPIC")
+set(CMAKE_CXX_FLAGS_RELEASE "-Wall -Wextra -O3 -std=c++11 -fPIC")
+set(CMAKE_C_FLAGS "-Wall -Wextra -std=c99 -fPIC")
+set(CMAKE_CXX_FLAGS "-Wall -Wextra -std=c++11 -fPIC")
 
 find_package(osl REQUIRED)
 find_package(clay REQUIRED)
