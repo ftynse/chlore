@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 
 clay_array_p chlore_beta_prefix(clay_array_p a1, clay_array_p a2) {
   clay_array_p prefix;

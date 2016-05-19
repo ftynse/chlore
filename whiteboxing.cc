@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <deque>
 #include <iostream>
 #include <set>
@@ -18,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
+#include <string.h>
 
 #include <chlore/chlore.h>
 #include "beta.h"

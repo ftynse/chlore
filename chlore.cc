@@ -3,8 +3,10 @@
 #include <osl/scop.h>
 #include <osl/extensions/clay.h>
 
+#include <algorithm>
 #include <iostream>
 #include <string>
+#include <cstring>
 
 struct chlore_options {
   bool normalize_original;

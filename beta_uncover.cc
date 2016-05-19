@@ -9,9 +9,12 @@
 #include <clay/relation.h>
 #include <clay/util.h>
 
+#include <algorithm>
 #include <cassert>
 #include <cstdio>
+#include <cstring>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <set>
 #include <vector>
