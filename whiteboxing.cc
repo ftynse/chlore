@@ -1189,6 +1189,7 @@ int chlore_extract_stripmine_size_impl(osl_scop_p scop, clay_array_p beta, int d
   precision = scattering->precision;
   osl_int_init(precision, &factor);
 
+  // Taking factor from parameter, where it is 1 less then the stripmine factor.
   osl_int_assign(precision, &factor,
           scattering->m[row_indices->data[1]][scattering->nb_columns - 1]);
 
@@ -1204,7 +1205,7 @@ int chlore_extract_stripmine_size_impl(osl_scop_p scop, clay_array_p beta, int d
     }
   }
 
-  size = osl_int_get_si(precision, factor);
+  size = osl_int_get_si(precision, factor) + 1;
 
   osl_int_clear(precision, &factor);
   clay_list_free(found_betas);
